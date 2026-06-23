@@ -1,0 +1,40 @@
+{
+  "name": "molpha-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing Molpha oracle runtime tools over the Molpha SDK.",
+  "type": "module",
+  "bin": {
+    "molpha-mcp": "dist/src/server.js",
+    "molpha-provision": "dist/cli/provision.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --import tsx src/server.ts",
+    "provision": "node --import tsx cli/provision.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.1",
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "@molpha-oracle/sdk": "0.4.0",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.0",
+    "bn.js": "^5.2.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.6",
+    "@types/node": "^22.15.29",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.1"
+  }
+}

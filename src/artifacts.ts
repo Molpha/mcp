@@ -1,0 +1,41 @@
+/** Shape a gateway DataUpdateResult into the spec-friendly signed artifact. */
+
+export interface SignedDataUpdate {
+  jobId: string;
+  registryVersion: number;
+  signaturesRequired: number;
+  value: string;
+  canonicalTimestamp: number;
+}
+
+export interface SignedSignature {
+  signature: string;
+  commitment: string;
+  signersBitmap: string;
+}
+
+export interface DataUpdateArtifact {
+  value: string;
+  fresh: boolean;
+  dataUpdate: SignedDataUpdate;
+  signature: SignedSignature;
+}
+
+export function toDataUpdateArtifact(result: Record<string, unknown>): DataUpdateArtifact {
+  return {
+    value: String(result.value ?? ""),
+    fresh: Boolean(result.fresh ?? true),
+    dataUpdate: {
+      jobId: String(result.jobId ?? ""),
+      registryVersion: Number(result.registryVersion ?? 0),
+      signaturesRequired: Number(result.signaturesRequired ?? 0),
+      value: String(result.value ?? ""),
+      canonicalTimestamp: Number(result.timestamp ?? 0)
+    },
+    signature: {
+      signature: String(result.s ?? ""),
+      commitment: String(result.commitmentAddr ?? ""),
+      signersBitmap: String(result.signersBitmap ?? "")
+    }
+  };
+}
