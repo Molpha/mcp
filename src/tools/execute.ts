@@ -38,7 +38,7 @@ export function registerExecuteTool(server: ToolServer): void {
         dryRun?: boolean;
       }
     ) => {
-      const { config, solana, ownerKeypair } = getMolphaContext();
+      const { config, solana, signer } = getMolphaContext();
       const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
 
       if (isDryRun) {
@@ -47,7 +47,7 @@ export function registerExecuteTool(server: ToolServer): void {
           action: "submit_data_update",
           jobId: result.jobId,
           registryVersion: result.registryVersion,
-          submitter: ownerKeypair.publicKey.toBase58()
+          submitter: signer.publicKey.toBase58()
         });
       }
 

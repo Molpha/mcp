@@ -5,6 +5,7 @@ export interface SignedDataUpdate {
   registryVersion: number;
   signaturesRequired: number;
   value: string;
+  valuePacked: string;
   canonicalTimestamp: number;
 }
 
@@ -30,6 +31,7 @@ export function toDataUpdateArtifact(result: Record<string, unknown>): DataUpdat
       registryVersion: Number(result.registryVersion ?? 0),
       signaturesRequired: Number(result.signaturesRequired ?? 0),
       value: String(result.value ?? ""),
+      valuePacked: String(result.valuePacked ?? ""),
       canonicalTimestamp: Number(result.timestamp ?? 0)
     },
     signature: {
