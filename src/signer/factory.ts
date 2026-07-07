@@ -2,6 +2,7 @@ import { loadOwnerKeypair } from "../config.js";
 import type { MolphaConfig } from "../config.js";
 import { MemorySigner } from "./backends/memory.js";
 import { PrivySigner } from "./backends/privy.js";
+import { TurnkeySigner } from "./backends/turnkey.js";
 import type { MolphaSigner } from "./types.js";
 
 export function createSigner(config: MolphaConfig): MolphaSigner {
@@ -26,8 +27,17 @@ function createKeychainSigner(): MolphaSigner {
     });
   }
 
+  if (provider === "turnkey") {
+    return new TurnkeySigner({
+      apiPublicKey: requireEnv("TURNKEY_API_PUBLIC_KEY"),
+      apiPrivateKey: requireEnv("TURNKEY_API_PRIVATE_KEY"),
+      organizationId: requireEnv("TURNKEY_ORGANIZATION_ID"),
+      address: requireEnv("TURNKEY_WALLET_ADDRESS"),
+    });
+  }
+
   throw new Error(
-    `Unknown KEYCHAIN_BACKEND="${provider ?? ""}". Supported values: privy`
+    `Unknown KEYCHAIN_BACKEND="${provider ?? ""}". Supported values: privy, turnkey`
   );
 }
 
