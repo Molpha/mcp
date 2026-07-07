@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { createSolanaClient, requireMethod } from "../src/clients.js";
-import { loadConfig, loadOwnerKeypair } from "../src/config.js";
+import { loadConfig } from "../src/config.js";
 import { getSdkExport } from "../src/sdk.js";
+import { createSigner } from "../src/signer/factory.js";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -20,8 +21,8 @@ if (command !== "subscribe" && command !== "extend") {
 }
 
 const config = loadConfig();
-const owner = loadOwnerKeypair(config);
-const solana = createSolanaClient(config, owner);
+const signer = createSigner(config);
+const solana = createSolanaClient(config, signer);
 
 const planName = values.plan ?? "Basic";
 const plan = resolvePlanId(planName);
@@ -33,7 +34,7 @@ if (!values["dry-run"] && !maxPriceUsdc) {
 
 const summary = {
   command,
-  owner: owner.publicKey.toBase58(),
+  owner: signer.publicKey.toBase58(),
   plan: planName,
   maxPriceUsdc,
   gatewayEndpoints: config.gatewayEndpoints,

@@ -1,7 +1,38 @@
 import { loadOwnerKeypair } from "../config.js";
 import type { MolphaConfig } from "../config.js";
 import { MemorySigner } from "./backends/memory.js";
+import { PrivySigner } from "./backends/privy.js";
+import type { MolphaSigner } from "./types.js";
 
-export function createSigner(config: MolphaConfig): MemorySigner {
+export function createSigner(config: MolphaConfig): MolphaSigner {
+  const backend = process.env["SIGNER_BACKEND"] ?? "memory";
+
+  if (backend === "keychain") {
+    return createKeychainSigner();
+  }
+
   return new MemorySigner(loadOwnerKeypair(config));
+}
+
+function createKeychainSigner(): MolphaSigner {
+  const provider = process.env["KEYCHAIN_BACKEND"];
+
+  if (provider === "privy") {
+    return new PrivySigner({
+      appId: requireEnv("PRIVY_APP_ID"),
+      appSecret: requireEnv("PRIVY_APP_SECRET"),
+      walletId: requireEnv("PRIVY_WALLET_ID"),
+      address: requireEnv("PRIVY_WALLET_ADDRESS"),
+    });
+  }
+
+  throw new Error(
+    `Unknown KEYCHAIN_BACKEND="${provider ?? ""}". Supported values: privy`
+  );
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required for SIGNER_BACKEND=keychain`);
+  return value;
 }
