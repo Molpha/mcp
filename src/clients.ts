@@ -1,13 +1,15 @@
 import { Wallet } from "@coral-xyz/anchor";
-import { Connection, Keypair, PublicKey, type Keypair as SolanaKeypair } from "@solana/web3.js";
-import { loadConfig, loadOwnerKeypair, type MolphaConfig } from "./config.js";
+import { Connection, PublicKey, type Keypair as SolanaKeypair } from "@solana/web3.js";
+import { loadConfig, type MolphaConfig } from "./config.js";
 import { getSdkExport, requireSdkExport } from "./sdk.js";
+import { createSigner } from "./signer/factory.js";
+import type { MolphaSigner } from "./signer/types.js";
 
 export interface MolphaContext {
   config: MolphaConfig;
   gateway: Record<string, unknown>;
   solana: Record<string, unknown>;
-  ownerKeypair: SolanaKeypair;
+  signer: MolphaSigner;
 }
 
 let cachedContext: MolphaContext | undefined;
@@ -17,15 +19,15 @@ export function getMolphaContext(): MolphaContext {
   return cachedContext;
 }
 
-export function createMolphaContext(config: MolphaConfig, signer?: SolanaKeypair): MolphaContext {
-  const ownerKeypair = signer ?? loadOwnerKeypair(config);
-  const solana = createSolanaClient(config, ownerKeypair);
+export function createMolphaContext(config: MolphaConfig): MolphaContext {
+  const signer = createSigner(config);
+  const solana = createSolanaClient(config, signer.keypair);
 
   return {
     config,
-    gateway: createGateway(config, solana, ownerKeypair),
+    gateway: createGateway(config, solana, signer.keypair),
     solana,
-    ownerKeypair
+    signer
   };
 }
 

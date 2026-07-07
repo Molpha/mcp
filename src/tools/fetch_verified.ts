@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { toDataUpdateArtifact } from "../artifacts.js";
 import { getMolphaContext, requireMethod } from "../clients.js";
+import { normalizeJobId } from "../hex.js";
 import { toolHandler } from "../mcp.js";
 import { buildVerifierArgsForChains, type ChainTarget } from "../verifiers.js";
 import { type ToolServer } from "./types.js";
@@ -43,7 +44,7 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
         "requestSignedData"
       );
       const result = await requestSignedData({
-        jobId,
+        jobId: normalizeJobId(jobId),
         apiConfig,
         ...(maxAge !== undefined ? { maxAge } : {}),
         ...(encryptSecrets ? { encrypt: { secrets: encryptSecrets } } : {})

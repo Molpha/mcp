@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getMolphaContext, requireMethod } from "../clients.js";
 import { normalizeError } from "../errors.js";
+import { normalizeJobId } from "../hex.js";
 import { toolHandler } from "../mcp.js";
 import { getVerifierMetadata } from "../verifiers.js";
 import { type ToolServer } from "./types.js";
@@ -27,7 +28,7 @@ export function registerDescribeJobTool(server: ToolServer): void {
 
       const gatewayConfig = includeGatewayConfig
         ? await settle("gateway.getJobConfig", async () =>
-            requireMethod<[string], Promise<unknown>>(gateway, "getJobConfig")(jobId)
+            requireMethod<[string], Promise<unknown>>(gateway, "getJobConfig")(normalizeJobId(jobId))
           )
         : { ok: false, skipped: true };
 

@@ -48,7 +48,7 @@ export function registerCreateJobTool(server: ToolServer): void {
         dryRun?: boolean;
       }
     ) => {
-      const { config, solana, ownerKeypair } = getMolphaContext();
+      const { config, solana, signer } = getMolphaContext();
       const determinism = checkApiConfigDeterminism(apiConfig);
 
       if (!determinism.ok && determinism.warnings.some((w) => w.includes("required"))) {
@@ -71,7 +71,7 @@ export function registerCreateJobTool(server: ToolServer): void {
         groupSize,
         determinismWarnings: determinism.warnings,
         subscription,
-        owner: ownerKeypair.publicKey.toBase58()
+        owner: signer.publicKey.toBase58()
       };
 
       const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
@@ -98,7 +98,7 @@ export function registerCreateJobTool(server: ToolServer): void {
         subscription: "active (devnet USDC, quota-based)",
         apiConfigHash: bytesToHex(apiConfigHash),
         determinismWarnings: determinism.warnings.length > 0 ? determinism.warnings : undefined,
-        owner: ownerKeypair.publicKey.toBase58()
+        owner: signer.publicKey.toBase58()
       };
     })
   );
