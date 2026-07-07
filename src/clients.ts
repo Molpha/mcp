@@ -1,5 +1,4 @@
-import { Wallet } from "@coral-xyz/anchor";
-import { Connection, PublicKey, type Keypair as SolanaKeypair } from "@solana/web3.js";
+import { Connection, PublicKey, type Transaction, type VersionedTransaction } from "@solana/web3.js";
 import { loadConfig, type MolphaConfig } from "./config.js";
 import { getSdkExport, requireSdkExport } from "./sdk.js";
 import { createSigner } from "./signer/factory.js";
@@ -21,11 +20,11 @@ export function getMolphaContext(): MolphaContext {
 
 export function createMolphaContext(config: MolphaConfig): MolphaContext {
   const signer = createSigner(config);
-  const solana = createSolanaClient(config, signer.keypair);
+  const solana = createSolanaClient(config, signer);
 
   return {
     config,
-    gateway: createGateway(config, solana, signer.keypair),
+    gateway: createGateway(config, solana, signer),
     solana,
     signer
   };
@@ -34,13 +33,11 @@ export function createMolphaContext(config: MolphaConfig): MolphaContext {
 export function createGateway(
   config: MolphaConfig,
   solana: Record<string, unknown>,
-  ownerKeypair: SolanaKeypair
+  signer: MolphaSigner
 ): Record<string, unknown> {
   const Gateway = requireSdkExport<new (...args: unknown[]) => Record<string, unknown>>("MolphaGateway");
-  const gatewaySignerFromWallet = getSdkExport<(wallet: Wallet) => unknown>("gatewaySignerFromWallet");
-  const wallet = new Wallet(ownerKeypair);
-  const defaultSigner =
-    typeof gatewaySignerFromWallet === "function" ? gatewaySignerFromWallet(wallet) : createRequestSigner(ownerKeypair);
+  // SDK Signer type = (message: Uint8Array) => Promise<Uint8Array>
+  const defaultSigner = (msg: Uint8Array) => signer.signMessage(msg);
 
   return new Gateway(
     config.gatewayEndpoints,
@@ -49,27 +46,22 @@ export function createGateway(
   );
 }
 
-export function createSolanaClient(config: MolphaConfig, signer: SolanaKeypair): Record<string, unknown> {
+export function createSolanaClient(config: MolphaConfig, signer: MolphaSigner): Record<string, unknown> {
   const SolanaClient = requireSdkExport<{
     create: (opts: Record<string, unknown>) => Record<string, unknown>;
   }>("MolphaSolanaClient");
   const connection = new Connection(config.solanaRpc, "confirmed");
-  const wallet = new Wallet(signer);
+  const wallet = {
+    publicKey: signer.publicKey,
+    signTransaction: <T extends Transaction | VersionedTransaction>(tx: T) => signer.signTransaction(tx),
+    signAllTransactions: <T extends Transaction | VersionedTransaction>(txs: T[]) => signer.signAllTransactions(txs),
+  };
 
   return SolanaClient.create({
     connection,
     wallet,
     ...(config.programId ? { programId: new PublicKey(config.programId) } : {})
   });
-}
-
-export function createRequestSigner(keypair: SolanaKeypair): unknown {
-  const signerFromKeypair = getSdkExport<(keypair: SolanaKeypair) => unknown>("signerFromKeypair");
-  if (typeof signerFromKeypair === "function") {
-    return signerFromKeypair(keypair);
-  }
-
-  return keypair;
 }
 
 export function requireMethod<TArgs extends unknown[], TResult>(
