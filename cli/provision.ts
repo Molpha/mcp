@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "../src/env.js";
 import { parseArgs } from "node:util";
 import { createSolanaClient, requireMethod } from "../src/clients.js";
 import { loadConfig } from "../src/config.js";

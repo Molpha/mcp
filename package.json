@@ -2,18 +2,37 @@
   "name": "molpha-mcp",
   "version": "0.1.0",
   "description": "MCP server exposing Molpha oracle runtime tools over the Molpha SDK.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Molpha/mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Molpha/mcp/issues"
+  },
+  "homepage": "https://docs.molpha.io/",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "molpha",
+    "oracle",
+    "solana"
+  ],
   "type": "module",
   "bin": {
     "molpha-mcp": "dist/src/server.js",
-    "molpha-provision": "dist/cli/provision.js"
+    "molpha-provision": "dist/cli/provision.js",
+    "molpha-doctor": "dist/cli/doctor.js"
   },
   "files": [
-    "dist",
+    "dist/src",
+    "dist/cli",
     "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --import tsx src/server.ts",
+    "doctor": "node --import tsx cli/doctor.ts",
     "provision": "node --import tsx cli/provision.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
@@ -31,6 +50,7 @@
     "@solana/spl-token": "^0.4.9",
     "@solana/web3.js": "^1.98.0",
     "bn.js": "^5.2.2",
+    "dotenv": "^16.6.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {

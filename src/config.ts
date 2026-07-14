@@ -5,7 +5,7 @@ import { Keypair } from "@solana/web3.js";
 import { getSdkExport } from "./sdk.js";
 
 const DEFAULT_SOLANA_RPC = "https://api.devnet.solana.com";
-const FALLBACK_GATEWAY_ENDPOINT = "http://188.166.222.245:8080";
+const FALLBACK_GATEWAY_ENDPOINT = "https://gateway.molpha.io";
 
 export interface GuardrailConfig {
   maxJobsPerDay: number;

@@ -1,0 +1,16 @@
+[mcp_servers.molpha]
+command = "node"
+args = ["/absolute/path/to/molpha-mcp/dist/src/server.js"]
+cwd = "/absolute/path/to/molpha-mcp"
+
+[mcp_servers.molpha.env]
+SIGNER_BACKEND = "keychain"
+KEYCHAIN_BACKEND = "turnkey"
+TURNKEY_API_PUBLIC_KEY = "<your-turnkey-api-public-key>"
+TURNKEY_API_PRIVATE_KEY = "<your-turnkey-api-private-key>"
+TURNKEY_ORGANIZATION_ID = "<your-turnkey-organization-id>"
+TURNKEY_WALLET_ADDRESS = "<base58-solana-address>"
+SOLANA_RPC = "https://api.devnet.solana.com"
+GATEWAY_ENDPOINTS = "https://gateway.molpha.io"
+MOLPHA_EVM_NETWORKS = "evm-sepolia"
+MOLPHA_STARKNET_NETWORKS = "starknet-sepolia"
