@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { Connection } from "@solana/web3.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, loadKeypair } from "./config.js";
 import { createSigner } from "./signer/factory.js";
 
 export interface SetupCheck {
@@ -32,6 +32,27 @@ export function validateSignerEnv(env: NodeJS.ProcessEnv = process.env): SetupCh
         ok: false,
         message: "OWNER_KEYPAIR is required for SIGNER_BACKEND=memory"
       });
+      return checks;
+    }
+
+    if (isInlineKeypair(ownerKeypair)) {
+      try {
+        loadKeypair(ownerKeypair);
+        checks.push({
+          name: "owner_keypair",
+          ok: true,
+          message: "OWNER_KEYPAIR=<inline-json-keypair>"
+        });
+      } catch (error) {
+        checks.push({
+          name: "owner_keypair",
+          ok: false,
+          message:
+            error instanceof Error
+              ? `OWNER_KEYPAIR inline JSON is invalid: ${error.message}`
+              : "OWNER_KEYPAIR inline JSON is invalid"
+        });
+      }
       return checks;
     }
 
@@ -235,8 +256,12 @@ export function buildCodexTomlSnippet(repoRoot = process.cwd(), env: NodeJS.Proc
   return `${lines.join("\n")}\n`;
 }
 
+function isInlineKeypair(pathOrJson: string): boolean {
+  return pathOrJson.trim().startsWith("[");
+}
+
 function resolveKeypairPath(path: string): string {
-  if (path.trim().startsWith("[")) {
+  if (isInlineKeypair(path)) {
     return "<inline-json-keypair>";
   }
 
