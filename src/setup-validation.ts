@@ -229,7 +229,7 @@ export async function checkGatewayEndpoints(endpoints: string[]): Promise<SetupC
         continue;
       }
       if (probeRes.status === 404 && probeText.includes("page not found")) {
-        lastError = `${base} serves /v1/nodes but not /v1/agent/execute (signing routes missing — use https://brebeneskul.gateway.molpha.io)`;
+        lastError = `${base} serves /v1/nodes but not /v1/agent/execute (signing routes missing — use https://dev-gateway.molpha.io)`;
         continue;
       }
       if (probeRes.status === 400 || probeRes.status === 401 || probeRes.status === 402) {

@@ -28,12 +28,14 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 | `molpha_describe_feed` | Read | Read a feed's on-chain state and subscription status. Pass `feedId`, or `apiConfig` + `signaturesRequired` to derive it. |
 | `molpha_derive_feed` | Read | Locally derive a feedId from `apiConfig` + `signaturesRequired`. No transaction. |
 | `molpha_agent_status` | Read | Read the x402 agent escrow (USDC balance, committed amount, quoted next price) for the current signer. |
-| `molpha_fetch_verified` | Read/quota/spend | Run a signing round and return the signed artifact plus verifier arguments. `payment: "subscription" \| "x402" \| "auto"` selects how the round is paid for. |
+| `molpha_fetch_verified` | Read/quota/spend | Run a signing round and return the signed artifact plus verifier arguments. `payment: "subscription" \| "x402" \| "auto"` selects how the round is paid for; `autoSubmit: true` settles the Solana leg in the same call. |
 | `molpha_get_latest` | Read | Read the latest value stored in a Solana feed account. |
-| `molpha_verify` | Read | Build EVM/Starknet verifier address and call arguments. |
-| `molpha_execute` | Write | Submit a signed data update to Solana. |
+| `molpha_verify` | Read | Build EVM/Starknet verifier address and call arguments (calldata only, by design). |
+| `molpha_execute` | Write | Submit a signed data update to Solana. Accepts the `molpha_fetch_verified` output unmodified. |
 
-`molpha_verify` does not execute EVM or Starknet calls; it returns the verifier address and call arguments. `molpha_execute` currently submits only to Solana. There is no standalone Solana verify-simulation path in this SDK version — submit via `molpha_execute` and read the result back with `molpha_get_latest`.
+`molpha_verify` stops at calldata **by design**: the Molpha verifier is stateless, so the agent executes `verify()` itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. Solana is the one leg this server settles — via `molpha_execute` or `molpha_fetch_verified`'s `autoSubmit` — and there is no standalone Solana verify-simulation path; submit, then read the result back with `molpha_get_latest`.
+
+`molpha_execute` and `molpha_verify` take the `molpha_fetch_verified` response as-is: no field remapping between calls, and short hex fields (the gateway emits a one-signer `signersBitmap` as `"4"`) are zero-padded to their canonical widths server-side.
 
 ## Quick start
 
@@ -219,7 +221,7 @@ Provisioning is a separate CLI path because subscribing or extending debits USDC
 | `KEYCHAIN_BACKEND` | — | `privy` or `turnkey` for a keychain signer |
 | `OWNER_KEYPAIR` | — | Local Solana JSON keypair path |
 | `SOLANA_RPC` | `https://api.devnet.solana.com` | Solana RPC endpoint |
-| `GATEWAY_ENDPOINTS` | `https://brebeneskul.gateway.molpha.io` | Comma-separated **Molpha gateway** base URLs (not your Solana RPC). Must expose `/v1/nodes` and signing routes (`/v1/agent/execute` for x402, `/v1/round/execute` for subscription). Run `npm run doctor` to verify. |
+| `GATEWAY_ENDPOINTS` | `https://dev-gateway.molpha.io` | Comma-separated **Molpha gateway** base URLs (not your Solana RPC). Must expose `/v1/nodes` and signing routes (`/v1/agent/execute` for x402, `/v1/round/execute` for subscription). Run `npm run doctor` to verify. |
 | `MOLPHA_EVM_NETWORKS` | `evm-sepolia` | Comma-separated EVM verifier networks |
 | `MOLPHA_STARKNET_NETWORKS` | `starknet-sepolia` | Comma-separated Starknet verifier networks |
 | `MOLPHA_MAX_EXECUTES_PER_DAY` | `100` | Process-local daily Solana-submit cap |

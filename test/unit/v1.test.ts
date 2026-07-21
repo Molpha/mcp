@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { toDataUpdateArtifact } from "../../src/artifacts.js";
+import { toDataUpdateArtifact, toSignedResult } from "../../src/artifacts.js";
 import { loadConfig, type MolphaConfig } from "../../src/config.js";
 import { checkApiConfigDeterminism } from "../../src/determinism.js";
 import { normalizeError } from "../../src/errors.js";
+import { decodeFeedValueKind, presentFeed } from "../../src/feed.js";
+import { toCanonicalHex } from "../../src/hex.js";
 import { checkX402PerRoundCap, checkX402SpendCap, enforceExecuteCap, resetGuardrailCounters } from "../../src/guardrails.js";
 import { buildVerifierArgsForChains } from "../../src/verifiers.js";
 
@@ -47,6 +49,25 @@ describe("loadConfig", () => {
   });
 });
 
+describe("toCanonicalHex", () => {
+  it("left-pads the gateway's minimal hex to the fixed width", () => {
+    expect(toCanonicalHex("4", 32, "signersBitmap")).toBe(`0x${"0".repeat(63)}4`);
+    expect(toCanonicalHex("0x04", 32, "signersBitmap")).toBe(`0x${"0".repeat(63)}4`);
+    expect(toCanonicalHex("0XAB", 20, "commitmentAddr")).toBe(`0x${"0".repeat(38)}ab`);
+  });
+
+  it("passes an already-canonical value through unchanged", () => {
+    const full = `0x${"a".repeat(64)}`;
+    expect(toCanonicalHex(full, 32, "s")).toBe(full);
+  });
+
+  it("rejects over-width and non-hex input", () => {
+    expect(() => toCanonicalHex("0x" + "a".repeat(66), 32, "s")).toThrow(/at most 32 bytes/);
+    expect(() => toCanonicalHex("0xnothex", 32, "s")).toThrow(/expected hex/);
+    expect(() => toCanonicalHex("", 32, "s")).toThrow(/empty/);
+  });
+});
+
 describe("toDataUpdateArtifact", () => {
   it("shapes gateway result into spec-friendly signed artifact", () => {
     const artifact = toDataUpdateArtifact({
@@ -56,27 +77,80 @@ describe("toDataUpdateArtifact", () => {
       registryVersion: 42,
       signaturesRequired: 3,
       timestamp: 1714300000,
-      s: "0xsig",
-      commitmentAddr: "0xcommit",
-      signersBitmap: "0xbitmap"
+      s: "0x5165",
+      commitmentAddr: "0xc0b",
+      signersBitmap: "4"
     });
 
     expect(artifact).toEqual({
       value: "123",
       fresh: true,
       dataUpdate: {
-        feedId: "0xabc",
+        feedId: `0x${"0".repeat(61)}abc`,
         registryVersion: 42,
         signaturesRequired: 3,
         value: "123",
         canonicalTimestamp: 1714300000
       },
       signature: {
-        signature: "0xsig",
-        commitment: "0xcommit",
-        signersBitmap: "0xbitmap"
+        signature: `0x${"0".repeat(60)}5165`,
+        commitment: `0x${"0".repeat(37)}c0b`,
+        signersBitmap: `0x${"0".repeat(63)}4`
       }
     });
+  });
+});
+
+describe("toSignedResult", () => {
+  const flat = {
+    feedId: `0x${"1".repeat(64)}`,
+    value: "66285",
+    valuePacked: `0x${"2".repeat(64)}`,
+    timestamp: 1714300000,
+    registryVersion: 7,
+    signaturesRequired: 1,
+    signersBitmap: "4",
+    s: `0x${"3".repeat(64)}`,
+    commitmentAddr: `0x${"4".repeat(40)}`,
+    fresh: true
+  };
+
+  it("accepts the fetch_verified artifact and the flat shape interchangeably", () => {
+    const artifact = toDataUpdateArtifact(flat);
+
+    expect(toSignedResult(artifact as unknown as Record<string, unknown>)).toEqual(
+      toSignedResult(flat)
+    );
+  });
+
+  it("canonicalizes the bitmap on both paths", () => {
+    expect(toSignedResult(flat).signersBitmap).toBe(`0x${"0".repeat(63)}4`);
+  });
+
+  it("ignores extra keys carried along from a pasted fetch_verified response", () => {
+    const pasted = {
+      ...(toDataUpdateArtifact(flat) as unknown as Record<string, unknown>),
+      payment: "x402",
+      trustAnchor: "…",
+      verifierArgs: { evm: {} }
+    };
+
+    expect(toSignedResult(pasted).s).toBe(flat.s);
+  });
+});
+
+describe("decodeFeedValueKind", () => {
+  it("flattens the Anchor enum variant object", () => {
+    expect(decodeFeedValueKind({ valueKind: { value: {} } })).toBe("value");
+    expect(decodeFeedValueKind({ valueKind: { hash: {} } })).toBe("hash");
+    expect(decodeFeedValueKind({ value_kind: { hash: {} } })).toBe("hash");
+    expect(decodeFeedValueKind(null)).toBeNull();
+  });
+
+  it("annotates the feed without dropping other fields", () => {
+    const feed = presentFeed({ valueKind: { value: {} }, registryVersion: 7 });
+    expect(feed).toMatchObject({ valueKind: "value", registryVersion: 7 });
+    expect(String(feed?.valueKindMeaning)).toContain("raw oracle payload");
   });
 });
 
@@ -182,5 +256,28 @@ describe("buildVerifierArgsForChains", () => {
 
     expect(args.evm).toBeDefined();
     expect((args.evm as { chainIds: number[] }).chainIds).toContain(11155111);
+  });
+
+  // The gateway emits a one-signer bitmap as "4"; the SDK's verifier-arg
+  // builders require exactly 32 bytes. Normalizing at the boundary is what
+  // keeps callers from having to zero-pad it themselves.
+  it("builds args from a gateway result whose signersBitmap is unpadded", () => {
+    const raw = {
+      feedId: "0".repeat(64),
+      value: "66285",
+      valuePacked: "0".repeat(64),
+      timestamp: 1,
+      registryVersion: 1,
+      signaturesRequired: 1,
+      signersBitmap: "4",
+      s: "0".repeat(64),
+      commitmentAddr: "0".repeat(40),
+      fresh: true
+    };
+
+    const args = buildVerifierArgsForChains(toSignedResult(raw), ["evm"], baseConfig);
+
+    expect(args.errors).toBeUndefined();
+    expect(args.evm).toBeDefined();
   });
 });

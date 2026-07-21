@@ -94,7 +94,7 @@ export function normalizeError(error: unknown): NormalizedToolError {
       code: "invalid_config",
       message,
       remediation:
-        "This gateway host exposes /v1/nodes but not signing routes. Use https://brebeneskul.gateway.molpha.io (run npm run doctor to verify)."
+        "This gateway host exposes /v1/nodes but not signing routes. Use https://dev-gateway.molpha.io (run npm run doctor to verify)."
     };
   }
 

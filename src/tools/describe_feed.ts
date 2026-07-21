@@ -2,6 +2,7 @@ import { z } from "zod";
 import { deriveFeedId } from "../apiconfig.js";
 import { getMolphaContext, requireMethod } from "../clients.js";
 import { settle } from "../errors.js";
+import { describeValueEncoding, presentFeed } from "../feed.js";
 import { normalizeFeedId } from "../hex.js";
 import { toolHandler } from "../mcp.js";
 import { apiConfigSchema } from "./schemas.js";
@@ -13,7 +14,7 @@ export function registerDescribeFeedTool(server: ToolServer): void {
     {
       title: "Describe Molpha feed",
       description:
-        "Read a feed's on-chain state (last committed value, registryVersion, signaturesRequired) and the caller's subscription status. Pass feedId directly, or apiConfig + signaturesRequired to derive it first (see molpha_derive_feed). A missing feed account is normal pre-first-settle — feeds are created lazily.",
+        "Read a feed's on-chain state (last committed value, registryVersion, signaturesRequired) and the caller's subscription status. Pass feedId directly, or apiConfig + signaturesRequired to derive it first (see molpha_derive_feed). A missing feed account is normal pre-first-settle — feeds are created lazily. `feed.valueKind` is the attested encoding of the stored bytes (\"value\" = raw payload, \"hash\" = keccak digest), NOT a scale hint: Molpha attests no decimals on-chain. When apiConfig is supplied, `valueEncoding` reports the off-chain valueTransform that produced the number, explicitly flagged as unattested.",
       inputSchema: {
         feedId: z.string().min(1).optional(),
         apiConfig: apiConfigSchema.optional(),
@@ -55,7 +56,8 @@ export function registerDescribeFeedTool(server: ToolServer): void {
 
       return {
         feedId: resolvedFeedId,
-        feed: onChainFeed,
+        feed: onChainFeed.ok ? presentFeed(onChainFeed.value) : onChainFeed,
+        ...(apiConfig ? { valueEncoding: describeValueEncoding(apiConfig.valueTransform) } : {}),
         subscription,
         chains: {
           solana: "devnet (canonical state)",

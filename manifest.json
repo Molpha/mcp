@@ -67,7 +67,7 @@
     },
     {
       "name": "molpha_fetch_verified",
-      "description": "Run a signing round and return the signed artifact plus verifier arguments."
+      "description": "Run a signing round and return the signed artifact plus verifier arguments. autoSubmit settles the Solana leg in the same call."
     },
     {
       "name": "molpha_get_latest",
@@ -75,11 +75,11 @@
     },
     {
       "name": "molpha_verify",
-      "description": "Build EVM/Starknet verifier address and call arguments."
+      "description": "Build EVM/Starknet verifier address and call arguments. Calldata only — the agent executes verify() itself."
     },
     {
       "name": "molpha_execute",
-      "description": "Submit a signed data update to Solana."
+      "description": "Submit a signed data update to Solana. Accepts the molpha_fetch_verified output unmodified."
     }
   ],
   "compatibility": {

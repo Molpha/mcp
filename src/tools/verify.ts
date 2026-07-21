@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { toSignedResult } from "../artifacts.js";
 import { getMolphaContext } from "../clients.js";
 import { toolHandler } from "../mcp.js";
 import { buildVerifierArgsForChains, getVerifierMetadata, type ChainTarget } from "../verifiers.js";
@@ -12,7 +13,7 @@ export function registerVerifyTool(server: ToolServer): void {
     {
       title: "Verify Molpha result",
       description:
-        "Build the verifier address and call args for a signed DataUpdate on EVM or Starknet, for the agent to execute the stateless verify() itself. The server does not vouch for results it did not verify on-chain. For Solana, submit the DataUpdate via molpha_execute (submit_data_update) and read it back with molpha_get_latest — there is no separate simulate-verify path.",
+        "Build the verifier address and call args for a signed DataUpdate on EVM or Starknet. This tool stops at calldata by design, not by omission: the Molpha verifier is stateless, so the agent (or its contract) executes verify() itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. There is no EVM/Starknet execution path anywhere in this MCP server. For Solana, submit the DataUpdate via molpha_execute (or molpha_fetch_verified autoSubmit) and read it back with molpha_get_latest — there is no separate simulate-verify path. Accepts the dataUpdate/signature objects from molpha_fetch_verified verbatim; short hex fields are zero-padded to their canonical widths server-side.",
       inputSchema: {
         dataUpdate: z.record(z.unknown()),
         signature: z.record(z.unknown()),
@@ -34,7 +35,7 @@ export function registerVerifyTool(server: ToolServer): void {
       }
     ) => {
       const { config } = await getMolphaContext();
-      const result = fromArtifact(dataUpdate, signature);
+      const result = toSignedResult({ dataUpdate, signature });
 
       return {
         chain,
@@ -44,22 +45,4 @@ export function registerVerifyTool(server: ToolServer): void {
       };
     })
   );
-}
-
-function fromArtifact(
-  dataUpdate: Record<string, unknown>,
-  signature: Record<string, unknown>
-): Record<string, unknown> {
-  return {
-    feedId: dataUpdate.feedId,
-    value: dataUpdate.value,
-    valuePacked: dataUpdate.valuePacked ?? dataUpdate.value,
-    timestamp: dataUpdate.canonicalTimestamp ?? dataUpdate.timestamp,
-    registryVersion: dataUpdate.registryVersion,
-    signaturesRequired: dataUpdate.signaturesRequired,
-    signersBitmap: signature.signersBitmap,
-    s: signature.signature ?? signature.s,
-    commitmentAddr: signature.commitment ?? signature.commitmentAddr,
-    fresh: true
-  };
 }

@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { getSdkExport } from "./sdk.js";
 
 const DEFAULT_SOLANA_RPC = "https://api.devnet.solana.com";
-const FALLBACK_GATEWAY_ENDPOINT = "https://brebeneskul.gateway.molpha.io";
+const FALLBACK_GATEWAY_ENDPOINT = "https://dev-gateway.molpha.io";
 
 export interface GuardrailConfig {
   maxExecutesPerDay: number;
