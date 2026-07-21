@@ -31,7 +31,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       # npm >=11.5.1 is required for OIDC trusted publishing; pin explicitly
       # rather than relying on whatever setup-node's Node 24 bundles.
