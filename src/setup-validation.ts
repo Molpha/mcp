@@ -180,7 +180,8 @@ function looksLikeSolanaRpc(endpoint: string): boolean {
       host.includes("helius") ||
       host.includes("quicknode") ||
       host.includes("alchemy") ||
-      host.endsWith("solana.com") ||
+      host === "solana.com" ||
+      host.endsWith(".solana.com") ||
       host.includes("rpc.")
     );
   } catch {
