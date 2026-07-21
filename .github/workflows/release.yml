@@ -32,10 +32,8 @@ jobs:
           node-version: 24
           cache: npm
 
-      # npm >=11.5.1 is required for OIDC trusted publishing; pin explicitly
-      # rather than relying on whatever setup-node's Node 24 bundles.
-      - name: Update npm for trusted publishing support
-        run: npm install -g npm@latest
+      - name: Print npm version
+        run: npm --version # must be >=11.5.1 for OIDC trusted publishing; Node 24 bundles a compatible npm
 
       - name: Install dependencies
         run: npm ci
@@ -51,6 +49,7 @@ jobs:
           publish: npm run ci:publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
 
       - name: Install mcp-publisher
         if: steps.changesets.outputs.published == 'true'
