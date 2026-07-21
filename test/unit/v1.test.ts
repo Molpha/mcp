@@ -3,7 +3,7 @@ import { toDataUpdateArtifact } from "../../src/artifacts.js";
 import { loadConfig, type MolphaConfig } from "../../src/config.js";
 import { checkApiConfigDeterminism } from "../../src/determinism.js";
 import { normalizeError } from "../../src/errors.js";
-import { checkX402SpendCap, enforceExecuteCap, resetGuardrailCounters } from "../../src/guardrails.js";
+import { checkX402PerRoundCap, checkX402SpendCap, enforceExecuteCap, resetGuardrailCounters } from "../../src/guardrails.js";
 import { buildVerifierArgsForChains } from "../../src/verifiers.js";
 
 describe("loadConfig", () => {
@@ -122,6 +122,12 @@ describe("guardrails", () => {
     // price never accumulate.
     checkX402SpendCap(1_000_000n, 1_000_000n, 1_000_000n);
     expect(() => checkX402SpendCap(1_000_000n, 1_000_000n, 1_000_000n)).not.toThrow();
+  });
+
+  it("enforces the x402 per-round cap independently of daily spend", () => {
+    resetGuardrailCounters();
+    expect(() => checkX402PerRoundCap(2_000_000n, 1_000_000n)).toThrow(/cap reached/);
+    expect(() => checkX402PerRoundCap(1_000_000n, 1_000_000n)).not.toThrow();
   });
 });
 

@@ -64,6 +64,12 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
     ) => {
       const { config, gateway, solana, signer, connection } = await getMolphaContext();
       const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
+      const resolvedFeedId = resolveFeedId(
+        feedId,
+        apiConfig,
+        signaturesRequired,
+        Buffer.from(getAddressEncoder().encode(signer.publicKey))
+      );
 
       const resolvedPayment =
         payment === "auto" ? (await readSubscriptionStatus(solana)).active ? "subscription" : "x402" : payment;
@@ -75,8 +81,6 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
       }
 
       if (resolvedPayment === "subscription") {
-        const resolvedFeedId = feedId ?? deriveFeedId(apiConfig, signaturesRequired, Buffer.from(getAddressEncoder().encode(signer.publicKey)));
-
         if (isDryRun) {
           return {
             dryRun: true,
@@ -107,6 +111,7 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
         {
           apiConfig,
           signaturesRequired,
+          feedId: resolvedFeedId,
           ...(maxAge !== undefined ? { maxAge } : {}),
           ...(isDryRun ? { dryRun: true } : {})
         }
@@ -136,6 +141,21 @@ function buildResult(
       "Consume the signed dataUpdate + signature (and verify or forward). Do not trust `value` alone.",
     verifierArgs: buildVerifierArgsForChains(result, chains, config)
   };
+}
+
+function resolveFeedId(
+  feedId: string | undefined,
+  apiConfig: z.infer<typeof apiConfigSchema>,
+  signaturesRequired: number,
+  owner: Uint8Array
+): string {
+  const derived = deriveFeedId(apiConfig, signaturesRequired, owner);
+  if (feedId !== undefined && normalizeFeedId(feedId) !== normalizeFeedId(derived)) {
+    throw new Error(
+      `feedId does not match apiConfig + signaturesRequired for this signer: expected ${derived}, got ${feedId}`
+    );
+  }
+  return derived;
 }
 
 function deriveFeedId(

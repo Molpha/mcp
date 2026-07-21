@@ -43,6 +43,26 @@ export function enforceExecuteCap(config: GuardrailConfig): void {
   bump(executes, config.maxExecutesPerDay, "execute");
 }
 
+/** Checks a proposed round price against the per-round cap only. */
+export function checkX402PerRoundCap(priceAtomic: bigint, maxPriceUsdcAtomic: bigint): void {
+  if (priceAtomic > maxPriceUsdcAtomic) {
+    throw new Error(
+      `x402 per-round price cap reached: round price (${formatUsdc(priceAtomic)} USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (${formatUsdc(maxPriceUsdcAtomic)} USDC).`
+    );
+  }
+}
+
+/** Checks a proposed wallet outflow against the daily spend cap only. */
+export function checkX402DailySpendCap(amountAtomic: bigint, maxSpendPerDayUsdcAtomic: bigint): void {
+  const day = todayKey();
+  const spentToday = x402Spend.day === day ? x402Spend.spentAtomic : 0n;
+  if (spentToday + amountAtomic > maxSpendPerDayUsdcAtomic) {
+    throw new Error(
+      `x402 daily spend cap reached (${formatUsdc(maxSpendPerDayUsdcAtomic)} USDC per day, ${formatUsdc(spentToday)} USDC already spent). Adjust MOLPHA_X402_MAX_SPEND_PER_DAY_USDC or wait until tomorrow.`
+    );
+  }
+}
+
 /**
  * Checks a proposed x402 round's price against the per-round and daily
  * spend caps, without recording the spend (call {@link recordX402Spend}
@@ -53,19 +73,8 @@ export function checkX402SpendCap(
   maxPriceUsdcAtomic: bigint,
   maxSpendPerDayUsdcAtomic: bigint
 ): void {
-  if (priceAtomic > maxPriceUsdcAtomic) {
-    throw new Error(
-      `x402 per-round price cap reached: round price (${formatUsdc(priceAtomic)} USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (${formatUsdc(maxPriceUsdcAtomic)} USDC).`
-    );
-  }
-
-  const day = todayKey();
-  const spentToday = x402Spend.day === day ? x402Spend.spentAtomic : 0n;
-  if (spentToday + priceAtomic > maxSpendPerDayUsdcAtomic) {
-    throw new Error(
-      `x402 daily spend cap reached (${formatUsdc(maxSpendPerDayUsdcAtomic)} USDC per day, ${formatUsdc(spentToday)} USDC already spent). Adjust MOLPHA_X402_MAX_SPEND_PER_DAY_USDC or wait until tomorrow.`
-    );
-  }
+  checkX402PerRoundCap(priceAtomic, maxPriceUsdcAtomic);
+  checkX402DailySpendCap(priceAtomic, maxSpendPerDayUsdcAtomic);
 }
 
 /** Records an actual x402 spend against the daily cap after funding succeeds. */

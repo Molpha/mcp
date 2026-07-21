@@ -1,11 +1,43 @@
 import { createHash } from "node:crypto";
-import { address } from "@solana/kit";
+import { address, getAddressEncoder } from "@solana/kit";
 import { Keypair, Transaction, type VersionedTransaction } from "@solana/web3.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getMolphaProgramId } from "../../src/clients.js";
 import { type MolphaConfig } from "../../src/config.js";
-import { resetGuardrailCounters } from "../../src/guardrails.js";
+import { recordX402Spend, resetGuardrailCounters } from "../../src/guardrails.js";
+import { requireSdkExport } from "../../src/sdk.js";
 import { type MolphaSigner } from "../../src/signer/types.js";
-import { agentFetch, agentRequestAuthMessage, type AgentRequestAuthParams } from "../../src/x402.js";
+import {
+  agentFetch,
+  agentRequestAuthMessage,
+  deriveAgentEscrow,
+  deriveAgentEscrowAta,
+  verifyX402FundingAccept,
+  type AgentRequestAuthParams,
+  type X402Accept
+} from "../../src/x402.js";
+
+const defaultApiConfig = {
+  url: "https://api.example.com/v1/finalized/rate",
+  responseParser: "$.rate"
+};
+
+function deriveTestFeedId(
+  payer: string,
+  apiConfig: { url: string; responseParser: string } = defaultApiConfig,
+  signaturesRequired = 1
+): string {
+  const canonicalize = requireSdkExport<(cfg: Record<string, unknown>) => Record<string, unknown>>(
+    "canonicalizeAPIConfig"
+  );
+  const deriveHash = requireSdkExport<(cfg: Record<string, unknown>) => Uint8Array>("deriveApiConfigHash");
+  const deriveId = requireSdkExport<(owner: Uint8Array, hash: Uint8Array, sigs: number) => string>(
+    "deriveFeedIdString"
+  );
+  const canonical = canonicalize(apiConfig);
+  const hash = deriveHash(canonical);
+  return deriveId(Buffer.from(getAddressEncoder().encode(address(payer))), hash, signaturesRequired);
+}
 
 function makeSigner(keypair: Keypair): MolphaSigner {
   return {
@@ -67,6 +99,48 @@ const fakeConnection = {
   confirmTransaction: vi.fn(async () => ({ value: { err: null } }))
 };
 
+const usdcMint = address(Keypair.generate().publicKey.toBase58());
+const programId = getMolphaProgramId();
+
+async function derivedFundingAddresses(payer: string, gateway: string) {
+  const escrow = await deriveAgentEscrow(address(payer), address(gateway), programId);
+  const escrowAta = await deriveAgentEscrowAta(escrow, usdcMint);
+  return { escrow: String(escrow), escrowAta: String(escrowAta) };
+}
+
+function makeAccept(overrides: {
+  payer: string;
+  gateway: string;
+  agent: string;
+  payTo: string;
+  asset?: string;
+  amount?: string;
+  maxAmountRequired?: string;
+  feedId?: string;
+}): X402Accept {
+  return {
+    scheme: "exact",
+    network: "solana-devnet",
+    maxAmountRequired: overrides.maxAmountRequired ?? "1000000",
+    payTo: overrides.payTo,
+    asset: overrides.asset ?? String(usdcMint),
+    resource: "/v1/agent/execute",
+    description: "test",
+    maxTimeoutSeconds: 60,
+    extra: {
+      agent: overrides.agent,
+      gateway: overrides.gateway,
+      feedId: overrides.feedId ?? "ab".repeat(32),
+      canonicalTimestamp: 1_700_000_000,
+      amount: overrides.amount ?? "1000000",
+      payer: overrides.payer,
+      currentAtaBalance: "0",
+      committedAmount: "0",
+      note: "fund and retry"
+    }
+  };
+}
+
 describe("agentRequestAuthMessage", () => {
   it("matches sha256(domainPrefix || agent || gateway || feedId || ts_le || amount_le)", () => {
     const agent = Keypair.generate().publicKey;
@@ -104,10 +178,67 @@ describe("agentRequestAuthMessage", () => {
   });
 });
 
+describe("verifyX402FundingAccept", () => {
+  it("accepts a 402 whose agent/payTo/asset match derived escrow + protocol USDC mint", async () => {
+    const payer = address(Keypair.generate().publicKey.toBase58());
+    const gateway = address(Keypair.generate().publicKey.toBase58());
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(payer), String(gateway));
+
+    const verified = await verifyX402FundingAccept(
+      makeAccept({
+        payer: String(payer),
+        gateway: String(gateway),
+        agent: escrow,
+        payTo: escrowAta
+      }),
+      {
+        payer,
+        programId,
+        usdcMint,
+        maxPriceUsdcAtomic: 10_000_000n,
+        maxSpendPerDayUsdcAtomic: 100_000_000n
+      }
+    );
+
+    expect(String(verified.escrow)).toBe(escrow);
+    expect(String(verified.escrowAta)).toBe(escrowAta);
+    expect(verified.fundAmount).toBe(1_000_000n);
+    expect(verified.roundPrice).toBe(1_000_000n);
+  });
+
+  it("rejects a mismatched payTo", async () => {
+    const payer = address(Keypair.generate().publicKey.toBase58());
+    const gateway = address(Keypair.generate().publicKey.toBase58());
+    const { escrow } = await derivedFundingAddresses(String(payer), String(gateway));
+
+    await expect(
+      verifyX402FundingAccept(
+        makeAccept({
+          payer: String(payer),
+          gateway: String(gateway),
+          agent: escrow,
+          payTo: Keypair.generate().publicKey.toBase58()
+        }),
+        {
+          payer,
+          programId,
+          usdcMint,
+          maxPriceUsdcAtomic: 10_000_000n,
+          maxSpendPerDayUsdcAtomic: 100_000_000n
+        }
+      )
+    ).rejects.toThrow(/payTo mismatch/);
+  });
+});
+
 describe("agentFetch", () => {
   const payerKeypair = Keypair.generate();
   const signer = makeSigner(payerKeypair);
-  const solana = { getRegistryVersion: async () => 1 };
+  const derivedFeedId = deriveTestFeedId(String(signer.publicKey));
+  const solana = {
+    getRegistryVersion: async () => 1,
+    fetchProtocolTokens: async () => ({ usdcMint, treasury: Keypair.generate().publicKey.toBase58() })
+  };
 
   beforeEach(() => {
     resetGuardrailCounters();
@@ -122,15 +253,16 @@ describe("agentFetch", () => {
 
   it("dry-runs without any funding when the escrow already covers the quoted price", async () => {
     const gatewayPda = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
     const config = makeConfig({ gatewayPda });
     const fetchMock = vi.fn(async (url: string | URL) => {
       expect(String(url)).toContain(`/v1/agent/${signer.publicKey}/status?signatures_required=1`);
       return jsonResponse(200, {
         payer: signer.publicKey,
         gateway: gatewayPda,
-        escrow: "escrow-placeholder",
+        escrow,
         exists: true,
-        ataAddress: "ata-placeholder",
+        ataAddress: escrowAta,
         ataExists: true,
         ataBalance: "5000000",
         committedAmount: "0",
@@ -151,16 +283,16 @@ describe("agentFetch", () => {
 
     expect(result.dryRun).toBe(true);
     expect(result.shortfallAtomicUsdc).toBe("0");
+    expect(result.escrow).toBe(escrow);
+    expect(result.ata).toBe(escrowAta);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
   });
 
   it("funds the escrow on 402, signs AgentRequestAuth, and returns the mapped result", async () => {
     const gatewayPubkey = Keypair.generate().publicKey.toBase58();
-    const escrowPubkey = Keypair.generate().publicKey.toBase58();
-    const mint = Keypair.generate().publicKey.toBase58();
-    const escrowAta = Keypair.generate().publicKey.toBase58();
-    const feedIdHex = "ab".repeat(32);
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+    const feedIdHex = derivedFeedId;
     const config = makeConfig();
 
     let executeCalls = 0;
@@ -171,7 +303,7 @@ describe("agentFetch", () => {
         return jsonResponse(200, {
           payer: signer.publicKey,
           gateway: gatewayPubkey,
-          escrow: escrowPubkey,
+          escrow,
           exists: false,
           ataAddress: escrowAta,
           ataExists: false,
@@ -192,27 +324,13 @@ describe("agentFetch", () => {
           x402Version: 1,
           error: "payment required: escrow ATA underfunded",
           accepts: [
-            {
-              scheme: "exact",
-              network: "solana-devnet",
-              maxAmountRequired: "1000000",
+            makeAccept({
+              payer: String(signer.publicKey),
+              gateway: gatewayPubkey,
+              agent: escrow,
               payTo: escrowAta,
-              asset: mint,
-              resource: "/v1/agent/execute",
-              description: "test",
-              maxTimeoutSeconds: 60,
-              extra: {
-                agent: escrowPubkey,
-                gateway: gatewayPubkey,
-                feedId: feedIdHex,
-                canonicalTimestamp: 1_700_000_000,
-                amount: "1000000",
-                payer: signer.publicKey,
-                currentAtaBalance: "0",
-                committedAmount: "0",
-                note: "fund and retry"
-              }
-            }
+              feedId: feedIdHex
+            })
           ]
         });
       }
@@ -241,7 +359,7 @@ describe("agentFetch", () => {
     const result = await agentFetch(
       { config, connection: fakeConnection as never, signer, solana },
       {
-        apiConfig: { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" },
+        apiConfig: defaultApiConfig,
         signaturesRequired: 1
       }
     );
@@ -254,7 +372,7 @@ describe("agentFetch", () => {
 
   it("uses status gateway + price when already funded (no unsigned discovery)", async () => {
     const gatewayPda = Keypair.generate().publicKey.toBase58();
-    const escrowPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
     const config = makeConfig(); // no pinned gateway PDA
 
     let executeCalls = 0;
@@ -264,7 +382,7 @@ describe("agentFetch", () => {
         return jsonResponse(200, {
           payer: signer.publicKey,
           gateway: gatewayPda,
-          escrow: escrowPubkey,
+          escrow,
           exists: true,
           ataAddress: "ata-placeholder",
           ataExists: true,
@@ -312,7 +430,7 @@ describe("agentFetch", () => {
 
   it("bumps canonical_timestamp and retries once on 409 when already funded", async () => {
     const gatewayPda = Keypair.generate().publicKey.toBase58();
-    const escrowPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
     const config = makeConfig({ gatewayPda });
 
     const timestamps: number[] = [];
@@ -322,9 +440,9 @@ describe("agentFetch", () => {
         return jsonResponse(200, {
           payer: signer.publicKey,
           gateway: gatewayPda,
-          escrow: escrowPubkey,
+          escrow,
           exists: true,
-          ataAddress: Keypair.generate().publicKey.toBase58(),
+          ataAddress: escrowAta,
           ataExists: true,
           ataBalance: "5000000",
           committedAmount: "0",
@@ -374,6 +492,8 @@ describe("agentFetch", () => {
 
   it("rejects a round priced above the per-round cap without funding the escrow", async () => {
     const config = makeConfig({ maxPriceUsdcAtomic: 500_000n });
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
 
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
@@ -387,27 +507,14 @@ describe("agentFetch", () => {
         x402Version: 1,
         error: "payment required: escrow ATA underfunded",
         accepts: [
-          {
-            scheme: "exact",
-            network: "solana-devnet",
-            maxAmountRequired: "1000000",
-            payTo: Keypair.generate().publicKey.toBase58(),
-            asset: Keypair.generate().publicKey.toBase58(),
-            resource: "/v1/agent/execute",
-            description: "test",
-            maxTimeoutSeconds: 60,
-            extra: {
-              agent: Keypair.generate().publicKey.toBase58(),
-              gateway: Keypair.generate().publicKey.toBase58(),
-              feedId: "ab".repeat(32),
-              canonicalTimestamp: 1_700_000_000,
-              amount: "1000000",
-              payer: signer.publicKey,
-              currentAtaBalance: "0",
-              committedAmount: "0",
-              note: "fund and retry"
-            }
-          }
+          makeAccept({
+            payer: String(signer.publicKey),
+            gateway: gatewayPubkey,
+            agent: escrow,
+            payTo: escrowAta,
+            amount: "1000000",
+            maxAmountRequired: "1000000"
+          })
         ]
       });
     });
@@ -422,6 +529,483 @@ describe("agentFetch", () => {
         }
       )
     ).rejects.toThrow(/cap reached/);
+
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malicious payTo / asset before signing any transfer", async () => {
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+    const config = makeConfig();
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) {
+        throw new Error("status unavailable");
+      }
+      return jsonResponse(402, {
+        x402Version: 1,
+        error: "payment required",
+        accepts: [
+          makeAccept({
+            payer: String(signer.publicKey),
+            gateway: gatewayPubkey,
+            agent: escrow,
+            payTo: Keypair.generate().publicKey.toBase58(),
+            asset: Keypair.generate().publicKey.toBase58()
+          })
+        ]
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        {
+          apiConfig: { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" },
+          signaturesRequired: 1
+        }
+      )
+    ).rejects.toThrow(/asset mismatch|payTo mismatch/);
+
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malicious extra.agent before signing any transfer", async () => {
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+    const config = makeConfig();
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) {
+        throw new Error("status unavailable");
+      }
+      return jsonResponse(402, {
+        x402Version: 1,
+        error: "payment required",
+        accepts: [
+          makeAccept({
+            payer: String(signer.publicKey),
+            gateway: gatewayPubkey,
+            agent: Keypair.generate().publicKey.toBase58(),
+            payTo: escrowAta
+          })
+        ]
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        {
+          apiConfig: { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" },
+          signaturesRequired: 1
+        }
+      )
+    ).rejects.toThrow(/agent \(escrow\) mismatch/);
+
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects maxAmountRequired above the per-round cap even when extra.amount is under the cap", async () => {
+    const config = makeConfig({ maxPriceUsdcAtomic: 1_000_000n });
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) {
+        throw new Error("status unavailable");
+      }
+      return jsonResponse(402, {
+        x402Version: 1,
+        error: "payment required",
+        accepts: [
+          makeAccept({
+            payer: String(signer.publicKey),
+            gateway: gatewayPubkey,
+            agent: escrow,
+            payTo: escrowAta,
+            amount: "500000",
+            maxAmountRequired: "2000000"
+          })
+        ]
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        {
+          apiConfig: { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" },
+          signaturesRequired: 1
+        }
+      )
+    ).rejects.toThrow(/cap reached|maxAmountRequired/);
+
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects maxAmountRequired greater than extra.amount", async () => {
+    const config = makeConfig();
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) {
+        throw new Error("status unavailable");
+      }
+      return jsonResponse(402, {
+        x402Version: 1,
+        error: "payment required",
+        accepts: [
+          makeAccept({
+            payer: String(signer.publicKey),
+            gateway: gatewayPubkey,
+            agent: escrow,
+            payTo: escrowAta,
+            amount: "1000000",
+            maxAmountRequired: "1500000"
+          })
+        ]
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        {
+          apiConfig: { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" },
+          signaturesRequired: 1
+        }
+      )
+    ).rejects.toThrow(/maxAmountRequired .* exceeds round price/);
+
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("funds and executes when the top-up equals the daily spend cap", async () => {
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+    const feedIdHex = derivedFeedId;
+    const config = makeConfig({ maxSpendPerDayUsdcAtomic: 1_000_000n });
+
+    let executeCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("/status")) {
+        return jsonResponse(200, {
+          payer: signer.publicKey,
+          gateway: gatewayPubkey,
+          escrow,
+          exists: false,
+          ataAddress: escrowAta,
+          ataExists: false,
+          ataBalance: "0",
+          committedAmount: "0",
+          quotedNextPrice: "1000000",
+          unsettledRounds: 0
+        });
+      }
+
+      executeCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+
+      if (executeCalls === 1) {
+        expect(body.amount).toBe(0);
+        return jsonResponse(402, {
+          x402Version: 1,
+          error: "payment required: escrow ATA underfunded",
+          accepts: [
+            makeAccept({
+              payer: String(signer.publicKey),
+              gateway: gatewayPubkey,
+              agent: escrow,
+              payTo: escrowAta,
+              feedId: feedIdHex
+            })
+          ]
+        });
+      }
+
+      expect(body.amount).toBe(1000000);
+      expect(typeof body.agent_request_auth_sig).toBe("string");
+      return jsonResponse(200, {
+        status: "completed",
+        data: {
+          feedId: feedIdHex,
+          value: "42",
+          valuePacked: "0".repeat(64),
+          timestamp: 1_700_000_000,
+          registryVersion: 1,
+          signaturesRequired: 1,
+          signersBitmap: "0".repeat(64),
+          s: "0".repeat(64),
+          commitmentAddr: "0".repeat(40),
+          fresh: true
+        }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      {
+        apiConfig: defaultApiConfig,
+        signaturesRequired: 1
+      }
+    );
+
+    expect(result.value).toBe("42");
+    expect(executeCalls).toBe(2);
+    expect(fakeConnection.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects before funding when the daily spend cap is already exhausted", async () => {
+    recordX402Spend(1_000_000n);
+    const config = makeConfig({ maxSpendPerDayUsdcAtomic: 1_000_000n });
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) {
+        throw new Error("status unavailable");
+      }
+      return jsonResponse(402, {
+        x402Version: 1,
+        error: "payment required: escrow ATA underfunded",
+        accepts: [
+          makeAccept({
+            payer: String(signer.publicKey),
+            gateway: gatewayPubkey,
+            agent: escrow,
+            payTo: escrowAta
+          })
+        ]
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        {
+          apiConfig: { url: "https://api.example.com/v1/finalized/rate", responseParser: "$.rate" },
+          signaturesRequired: 1
+        }
+      )
+    ).rejects.toThrow(/daily spend cap reached/);
+
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("funds once then retries a 409 without re-applying the daily spend cap", async () => {
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+    const config = makeConfig({ maxSpendPerDayUsdcAtomic: 1_000_000n });
+
+    let executeCalls = 0;
+    const timestamps: number[] = [];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("/status")) {
+        return jsonResponse(200, {
+          payer: signer.publicKey,
+          gateway: gatewayPubkey,
+          escrow,
+          exists: false,
+          ataAddress: escrowAta,
+          ataExists: false,
+          ataBalance: "0",
+          committedAmount: "0",
+          quotedNextPrice: "1000000",
+          unsettledRounds: 0
+        });
+      }
+
+      executeCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+
+      if (executeCalls === 1) {
+        expect(body.amount).toBe(0);
+        return jsonResponse(402, {
+          x402Version: 1,
+          error: "payment required: escrow ATA underfunded",
+          accepts: [
+            makeAccept({
+              payer: String(signer.publicKey),
+              gateway: gatewayPubkey,
+              agent: escrow,
+              payTo: escrowAta,
+              feedId: derivedFeedId
+            })
+          ]
+        });
+      }
+
+      timestamps.push(body.canonical_timestamp as number);
+      expect(body.amount).toBe(1000000);
+
+      if (timestamps.length === 1) {
+        return jsonResponse(409, { error: "canonical_timestamp already reserved" });
+      }
+
+      return jsonResponse(200, {
+        status: "completed",
+        data: {
+          feedId: derivedFeedId,
+          value: "7",
+          valuePacked: "0".repeat(64),
+          timestamp: body.canonical_timestamp,
+          registryVersion: 1,
+          signaturesRequired: 1,
+          signersBitmap: "0".repeat(64),
+          s: "0".repeat(64),
+          commitmentAddr: "0".repeat(40),
+          fresh: true
+        }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      {
+        apiConfig: defaultApiConfig,
+        signaturesRequired: 1
+      }
+    );
+
+    expect(result.value).toBe("7");
+    expect(timestamps).toHaveLength(2);
+    expect(timestamps[1]).toBe((timestamps[0] ?? 0) + 1);
+    expect(fakeConnection.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a caller-provided feedId that matches the derived id (bare hex)", async () => {
+    const gatewayPda = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
+    const config = makeConfig({ gatewayPda });
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, {
+        payer: signer.publicKey,
+        gateway: gatewayPda,
+        escrow,
+        exists: true,
+        ataAddress: escrowAta,
+        ataExists: true,
+        ataBalance: "5000000",
+        committedAmount: "0",
+        quotedNextPrice: "1000000",
+        unsettledRounds: 0
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      {
+        apiConfig: defaultApiConfig,
+        signaturesRequired: 1,
+        feedId: derivedFeedId,
+        dryRun: true
+      }
+    );
+
+    expect(result.dryRun).toBe(true);
+    expect(result.feedId).toBe(derivedFeedId);
+  });
+
+  it("accepts a caller-provided feedId that matches the derived id (0x prefix)", async () => {
+    const gatewayPda = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
+    const config = makeConfig({ gatewayPda });
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, {
+        payer: signer.publicKey,
+        gateway: gatewayPda,
+        escrow,
+        exists: true,
+        ataAddress: escrowAta,
+        ataExists: true,
+        ataBalance: "5000000",
+        committedAmount: "0",
+        quotedNextPrice: "1000000",
+        unsettledRounds: 0
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      {
+        apiConfig: defaultApiConfig,
+        signaturesRequired: 1,
+        feedId: `0x${derivedFeedId}`,
+        dryRun: true
+      }
+    );
+
+    expect(result.dryRun).toBe(true);
+    expect(result.feedId).toBe(derivedFeedId);
+  });
+
+  it("rejects a mismatched caller-provided feedId before any network call", async () => {
+    const config = makeConfig();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        {
+          apiConfig: defaultApiConfig,
+          signaturesRequired: 1,
+          feedId: "ff".repeat(32)
+        }
+      )
+    ).rejects.toThrow(/feedId does not match/);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects discovery when extra.feedId does not match the derived id", async () => {
+    const gatewayPubkey = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPubkey);
+    const config = makeConfig();
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) {
+        throw new Error("status unavailable");
+      }
+      return jsonResponse(402, {
+        x402Version: 1,
+        error: "payment required",
+        accepts: [
+          makeAccept({
+            payer: String(signer.publicKey),
+            gateway: gatewayPubkey,
+            agent: escrow,
+            payTo: escrowAta,
+            feedId: "cd".repeat(32)
+          })
+        ]
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        {
+          apiConfig: defaultApiConfig,
+          signaturesRequired: 1
+        }
+      )
+    ).rejects.toThrow(/feedId does not match/);
 
     expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
   });

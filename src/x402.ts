@@ -15,9 +15,15 @@ import {
 } from "@solana-program/token";
 import { Transaction, type Connection } from "@solana/web3.js";
 import { sortApiConfigHeaders } from "./apiconfig.js";
-import { requireMethod } from "./clients.js";
+import { getMolphaProgramId, requireMethod } from "./clients.js";
 import { type MolphaConfig } from "./config.js";
-import { checkX402SpendCap, recordX402Spend } from "./guardrails.js";
+import {
+  checkX402DailySpendCap,
+  checkX402PerRoundCap,
+  checkX402SpendCap,
+  recordX402Spend
+} from "./guardrails.js";
+import { normalizeFeedId } from "./hex.js";
 import { requireSdkExport } from "./sdk.js";
 import { toLegacyInstruction, toLegacyPublicKey } from "./solana-compat.js";
 import type { MolphaSigner } from "./signer/types.js";
@@ -36,12 +42,14 @@ export interface ApiConfigInput {
 export interface AgentFetchOptions {
   apiConfig: ApiConfigInput;
   signaturesRequired: number;
+  /** When set, must match the feedId derived from apiConfig + signaturesRequired + payer. */
+  feedId?: string;
   /** Accepted for API symmetry with the subscription path; x402 rounds always run fresh (the gateway has no maxAge/cache concept for /v1/agent/execute). */
   maxAge?: number;
   dryRun?: boolean;
 }
 
-interface X402Extra {
+export interface X402Extra {
   agent: string;
   gateway: string;
   feedId: string;
@@ -53,7 +61,7 @@ interface X402Extra {
   note: string;
 }
 
-interface X402Accept {
+export interface X402Accept {
   scheme: string;
   network: string;
   maxAmountRequired: string;
@@ -117,6 +125,100 @@ export async function deriveAgentEscrow(
   return pda;
 }
 
+/** Escrow USDC ATA (associated token account owned by the agent escrow PDA). */
+export async function deriveAgentEscrowAta(escrow: Address, usdcMint: Address): Promise<Address> {
+  const [ata] = await findAssociatedTokenPda({
+    owner: escrow,
+    mint: usdcMint,
+    tokenProgram: TOKEN_PROGRAM_ADDRESS
+  });
+  return ata;
+}
+
+export interface VerifyX402FundingContext {
+  payer: Address;
+  programId: Address;
+  usdcMint: Address;
+  /** When set, 402 `extra.gateway` must match (config pin, status, or prior discovery). */
+  knownGateway?: Address | string | undefined;
+  maxPriceUsdcAtomic: bigint;
+  maxSpendPerDayUsdcAtomic: bigint;
+}
+
+export interface VerifiedX402Funding {
+  gateway: Address;
+  escrow: Address;
+  escrowAta: Address;
+  usdcMint: Address;
+  fundAmount: bigint;
+  roundPrice: bigint;
+}
+
+/**
+ * Treat a 402 `accepts[0]` as untrusted: derive escrow + USDC ATA, pin the mint
+ * to on-chain protocol config, and cap the transfer amount before signing.
+ */
+export async function verifyX402FundingAccept(
+  accept: X402Accept,
+  ctx: VerifyX402FundingContext
+): Promise<VerifiedX402Funding> {
+  if (accept.extra.payer !== String(ctx.payer)) {
+    throw new Error(
+      `x402 402 response payer mismatch: expected ${ctx.payer}, got ${accept.extra.payer}`
+    );
+  }
+
+  const gateway = address(accept.extra.gateway);
+  if (ctx.knownGateway !== undefined && String(ctx.knownGateway) !== String(gateway)) {
+    throw new Error(
+      `x402 402 response gateway mismatch: expected ${ctx.knownGateway}, got ${gateway}`
+    );
+  }
+
+  const escrow = await deriveAgentEscrow(ctx.payer, gateway, ctx.programId);
+  if (accept.extra.agent !== String(escrow)) {
+    throw new Error(
+      `x402 402 response agent (escrow) mismatch: expected derived ${escrow}, got ${accept.extra.agent}`
+    );
+  }
+
+  if (accept.asset !== String(ctx.usdcMint)) {
+    throw new Error(
+      `x402 402 response asset mismatch: expected protocol USDC mint ${ctx.usdcMint}, got ${accept.asset}`
+    );
+  }
+
+  const escrowAta = await deriveAgentEscrowAta(escrow, ctx.usdcMint);
+  if (accept.payTo !== String(escrowAta)) {
+    throw new Error(
+      `x402 402 response payTo mismatch: expected derived escrow ATA ${escrowAta}, got ${accept.payTo}`
+    );
+  }
+
+  const roundPrice = BigInt(accept.extra.amount);
+  const fundAmount = BigInt(accept.maxAmountRequired);
+
+  checkX402PerRoundCap(roundPrice, ctx.maxPriceUsdcAtomic);
+  if (fundAmount > 0n) {
+    checkX402DailySpendCap(fundAmount, ctx.maxSpendPerDayUsdcAtomic);
+  }
+
+  if (fundAmount > roundPrice) {
+    throw new Error(
+      `x402 402 response maxAmountRequired (${fundAmount}) exceeds round price extra.amount (${roundPrice})`
+    );
+  }
+
+  return {
+    gateway,
+    escrow,
+    escrowAta,
+    usdcMint: ctx.usdcMint,
+    fundAmount,
+    roundPrice
+  };
+}
+
 /** Advisory status for one payer at this gateway. Escrow is derived server-side. */
 export async function fetchAgentStatus(
   config: MolphaConfig,
@@ -143,8 +245,15 @@ export async function agentFetch(
   const apiConfig = canonicalizeApiConfig(opts.apiConfig);
   const apiConfigHash = deriveApiConfigHash(apiConfig);
   const expectedFeedId = deriveFeedIdString(payer, apiConfigHash, opts.signaturesRequired);
+  assertFeedIdMatch(expectedFeedId, opts.feedId);
 
   const endpointKey = config.gatewayEndpoints[0] ?? "";
+  const programId = getMolphaProgramId();
+  const { usdcMint: usdcMintRaw } = await requireMethod<
+    [],
+    Promise<{ usdcMint: Address | string; treasury?: Address | string }>
+  >(solana, "fetchProtocolTokens")();
+  const usdcMint = address(String(usdcMintRaw));
 
   const registryVersion = await requireMethod<[], Promise<number>>(solana, "getRegistryVersion")();
 
@@ -156,7 +265,19 @@ export async function agentFetch(
   let availableAtomic = status
     ? bigIntMax(0n, BigInt(status.ataBalance) - BigInt(status.committedAmount))
     : 0n;
-  let escrowStr = status?.escrow ?? "";
+  let escrowStr =
+    gatewayPda !== undefined
+      ? String(await deriveAgentEscrow(payer, address(gatewayPda), programId))
+      : "";
+
+  const fundingVerifyCtx = (knownGateway: string | undefined): VerifyX402FundingContext => ({
+    payer,
+    programId,
+    usdcMint,
+    knownGateway,
+    maxPriceUsdcAtomic: config.x402.maxPriceUsdcAtomic,
+    maxSpendPerDayUsdcAtomic: config.x402.maxSpendPerDayUsdcAtomic
+  });
 
   if (opts.dryRun) {
     if (priceAtomic === undefined || gatewayPda === undefined) {
@@ -167,16 +288,31 @@ export async function agentFetch(
         registryVersion,
         timestamp: Math.floor(Date.now() / 1000)
       });
-      cacheGatewayPda(endpointKey, discovery.extra.gateway);
-      priceAtomic = BigInt(discovery.extra.amount);
-      availableAtomic = bigIntMax(0n, BigInt(discovery.extra.currentAtaBalance) - BigInt(discovery.extra.committedAmount));
-      return dryRunPreview(discovery.extra.feedId, discovery.extra.agent, discovery.payTo, priceAtomic, availableAtomic);
+      const verified = await verifyX402FundingAccept(discovery, fundingVerifyCtx(gatewayPda));
+      assertFeedIdMatch(expectedFeedId, discovery.extra.feedId);
+      cacheGatewayPda(endpointKey, String(verified.gateway));
+      availableAtomic = bigIntMax(
+        0n,
+        BigInt(discovery.extra.currentAtaBalance) - BigInt(discovery.extra.committedAmount)
+      );
+      return dryRunPreview(
+        expectedFeedId,
+        String(verified.escrow),
+        String(verified.escrowAta),
+        verified.roundPrice,
+        availableAtomic
+      );
     }
+
+    const escrowAta =
+      escrowStr !== ""
+        ? String(await deriveAgentEscrowAta(address(escrowStr), usdcMint))
+        : (status?.ataAddress ?? "unknown");
 
     return dryRunPreview(
       expectedFeedId,
       escrowStr || "unknown",
-      status?.ataAddress ?? "unknown",
+      escrowAta,
       priceAtomic,
       availableAtomic
     );
@@ -185,6 +321,7 @@ export async function agentFetch(
   let timestamp = Math.floor(Date.now() / 1000);
   let feedIdHex = expectedFeedId;
   let lastPaymentRequired: X402PaymentRequiredBody | undefined;
+  let walletSpendRecordedForRound = false;
 
   for (let attempt = 0; attempt < MAX_ROUND_ATTEMPTS; attempt++) {
     const needsQuoteOrFunding = priceAtomic === undefined || availableAtomic < priceAtomic;
@@ -205,7 +342,7 @@ export async function agentFetch(
         }
         gatewayPda = refreshed.gateway;
         cacheGatewayPda(endpointKey, gatewayPda);
-        escrowStr = refreshed.escrow;
+        escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
         priceAtomic = BigInt(refreshed.quotedNextPrice);
         availableAtomic = bigIntMax(
           0n,
@@ -221,25 +358,26 @@ export async function agentFetch(
           timestamp
         });
 
-        gatewayPda = discovery.extra.gateway;
+        const verified = await verifyX402FundingAccept(discovery, fundingVerifyCtx(gatewayPda));
+        assertFeedIdMatch(expectedFeedId, discovery.extra.feedId);
+        gatewayPda = String(verified.gateway);
         cacheGatewayPda(endpointKey, gatewayPda);
-        priceAtomic = BigInt(discovery.extra.amount);
-        checkX402SpendCap(priceAtomic, config.x402.maxPriceUsdcAtomic, config.x402.maxSpendPerDayUsdcAtomic);
+        priceAtomic = verified.roundPrice;
 
-        const shortfallAtomic = BigInt(discovery.maxAmountRequired);
-        if (shortfallAtomic > 0n) {
+        if (verified.fundAmount > 0n) {
           await fundEscrow(connection, signer, {
-            mint: address(discovery.asset),
-            escrow: address(discovery.extra.agent),
-            escrowAta: address(discovery.payTo),
-            amountAtomic: shortfallAtomic
+            mint: verified.usdcMint,
+            escrow: verified.escrow,
+            escrowAta: verified.escrowAta,
+            amountAtomic: verified.fundAmount
           });
-          recordX402Spend(shortfallAtomic);
+          recordX402Spend(verified.fundAmount);
+          walletSpendRecordedForRound = true;
         }
 
         timestamp = discovery.extra.canonicalTimestamp;
-        feedIdHex = discovery.extra.feedId;
-        escrowStr = discovery.extra.agent;
+        feedIdHex = expectedFeedId;
+        escrowStr = String(verified.escrow);
         availableAtomic = priceAtomic;
       }
     }
@@ -248,7 +386,15 @@ export async function agentFetch(
       throw new Error("x402 agent execute missing gateway PDA, escrow, or round price after discovery");
     }
 
-    checkX402SpendCap(priceAtomic, config.x402.maxPriceUsdcAtomic, config.x402.maxSpendPerDayUsdcAtomic);
+    if (walletSpendRecordedForRound) {
+      checkX402PerRoundCap(priceAtomic, config.x402.maxPriceUsdcAtomic);
+    } else {
+      checkX402SpendCap(
+        priceAtomic,
+        config.x402.maxPriceUsdcAtomic,
+        config.x402.maxSpendPerDayUsdcAtomic
+      );
+    }
 
     const sig = await signAgentRequestAuth(signer, {
       agent: address(escrowStr),
@@ -274,10 +420,16 @@ export async function agentFetch(
 
     if (outcome.kind === "payment_required") {
       lastPaymentRequired = outcome.body;
-      gatewayPda = outcome.body.accepts[0]?.extra.gateway ?? gatewayPda;
-      if (gatewayPda) cacheGatewayPda(endpointKey, gatewayPda);
-      if (outcome.body.accepts[0]?.extra.agent) {
-        escrowStr = outcome.body.accepts[0].extra.agent;
+      const accept = outcome.body.accepts[0];
+      if (accept?.extra.gateway) {
+        if (gatewayPda !== undefined && accept.extra.gateway !== gatewayPda) {
+          throw new Error(
+            `x402 402 response gateway mismatch: expected ${gatewayPda}, got ${accept.extra.gateway}`
+          );
+        }
+        gatewayPda = accept.extra.gateway;
+        cacheGatewayPda(endpointKey, gatewayPda);
+        escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
       }
       priceAtomic = undefined;
       availableAtomic = 0n;
@@ -296,10 +448,12 @@ export async function agentFetch(
           0n,
           BigInt(refreshed.ataBalance) - BigInt(refreshed.committedAmount)
         );
-        escrowStr = refreshed.escrow;
         if (refreshed.gateway) {
           gatewayPda = refreshed.gateway;
           cacheGatewayPda(endpointKey, gatewayPda);
+        }
+        if (gatewayPda) {
+          escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
         }
         timestamp = Math.floor(Date.now() / 1000);
         continue;
@@ -375,6 +529,15 @@ function deriveFeedIdString(owner: Address, apiConfigHash: Uint8Array, signature
   return derive(Buffer.from(getAddressEncoder().encode(owner)), apiConfigHash, signaturesRequired);
 }
 
+function assertFeedIdMatch(expected: string, provided: string | undefined): void {
+  if (provided === undefined) return;
+  if (normalizeFeedId(provided) !== normalizeFeedId(expected)) {
+    throw new Error(
+      `feedId does not match apiConfig + signaturesRequired for this signer: expected ${expected}, got ${provided}`
+    );
+  }
+}
+
 function hexToBytesLocal(hex: string): Uint8Array {
   return requireSdkExport<(hex: string) => Uint8Array>("hexToBytes")(hex);
 }
@@ -425,6 +588,10 @@ function addressSigner<T extends string>(addr: Address<T>): TransactionSigner<T>
   return { address: addr } as unknown as TransactionSigner<T>;
 }
 
+/**
+ * Build + send the escrow ATA create/transfer. Callers must pass addresses and
+ * amounts already verified by {@link verifyX402FundingAccept} — never raw 402 fields.
+ */
 async function fundEscrow(
   connection: Connection,
   signer: MolphaSigner,
