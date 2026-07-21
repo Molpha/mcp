@@ -11,11 +11,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Molpha/mcp.git"
+    "url": "https://github.com/molpha/mcp.git"
   },
   "homepage": "https://docs.molpha.io/",
   "documentation": "https://docs.molpha.io/",
-  "support": "https://github.com/Molpha/mcp/issues",
+  "support": "https://github.com/molpha/mcp/issues",
   "license": "MIT",
   "keywords": [
     "mcp",

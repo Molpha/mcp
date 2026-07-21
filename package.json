@@ -6,10 +6,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Molpha/mcp.git"
+    "url": "git+https://github.com/molpha/mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/Molpha/mcp/issues"
+    "url": "https://github.com/molpha/mcp/issues"
   },
   "homepage": "https://docs.molpha.io/",
   "keywords": [
