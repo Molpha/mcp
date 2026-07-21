@@ -1,6 +1,7 @@
 {
-  "name": "molpha-mcp",
-  "version": "0.1.0",
+  "name": "@molpha/mcp",
+  "version": "0.1.1",
+  "mcpName": "io.github.molpha/mcp",
   "description": "MCP server exposing Molpha oracle runtime tools over the Molpha SDK.",
   "license": "MIT",
   "repository": {
@@ -13,8 +14,15 @@
   "homepage": "https://docs.molpha.io/",
   "keywords": [
     "mcp",
+    "ai",
+    "agents",
+    "llm",
+    "cursor",
+    "claude",
+    "codex",
+    "x402",
+    "web3",
     "model-context-protocol",
-    "molpha",
     "oracle",
     "solana"
   ],
@@ -29,31 +37,48 @@
     "dist/cli",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --import tsx src/server.ts",
     "doctor": "node --import tsx cli/doctor.ts",
     "provision": "node --import tsx cli/provision.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "sync-version": "node scripts/sync-version.mjs",
+    "changeset": "changeset",
+    "ci:version": "changeset version && npm run sync-version",
+    "ci:publish": "changeset publish"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.0.0"
   },
   "dependencies": {
+    "@anchor-lang/core": "^1.1.2",
     "@coral-xyz/anchor": "^0.30.1",
     "@modelcontextprotocol/sdk": "^1.13.0",
-    "@molpha-oracle/sdk": "0.4.0",
-    "@privy-io/server-auth": "^1.32.5",
-    "@turnkey/sdk-server": "^6.1.1",
+    "@molpha/sdk": "0.1.0",
+    "@privy-io/node": "^0.26.0",
+    "@solana-program/token": "^0.15.0",
+    "@solana/kit": "^7.0.0",
+    "@solana/spl-token": "0.4.15",
+    "@solana/web3.js": "^1.98.4",
+    "@turnkey/sdk-server": "7.0.0",
     "@turnkey/solana": "^1.1.31",
-    "@solana/spl-token": "^0.4.9",
-    "@solana/web3.js": "^1.98.0",
     "bn.js": "^5.2.2",
     "dotenv": "^16.6.1",
     "zod": "^3.25.0"
   },
+  "overrides": {
+    "@privy-io/node": {
+      "@solana/kit": "$@solana/kit"
+    }
+  },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.1",
     "@types/bn.js": "^5.1.6",
     "@types/node": "^22.15.29",
     "tsx": "^4.19.4",

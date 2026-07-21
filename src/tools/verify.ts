@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { getMolphaContext, requireMethod } from "../clients.js";
+import { toSignedResult } from "../artifacts.js";
+import { getMolphaContext } from "../clients.js";
 import { toolHandler } from "../mcp.js";
 import { buildVerifierArgsForChains, getVerifierMetadata, type ChainTarget } from "../verifiers.js";
 import { type ToolServer } from "./types.js";
 
-const chainSchema = z.enum(["evm", "starknet", "solana"]);
+const chainSchema = z.enum(["evm", "starknet"]);
 
 export function registerVerifyTool(server: ToolServer): void {
   server.registerTool(
@@ -12,7 +13,7 @@ export function registerVerifyTool(server: ToolServer): void {
     {
       title: "Verify Molpha result",
       description:
-        "Verify a signed DataUpdate. Solana: runs the simulate verify path and returns the recovered value + validity. EVM/Starknet: returns the verifier address and call args for the agent to execute the stateless verify() itself. The server does not vouch for results it did not verify on-chain.",
+        "Build the verifier address and call args for a signed DataUpdate on EVM or Starknet. This tool stops at calldata by design, not by omission: the Molpha verifier is stateless, so the agent (or its contract) executes verify() itself and the server never submits an EVM/Starknet transaction or vouches for a result it did not verify on-chain. There is no EVM/Starknet execution path anywhere in this MCP server. For Solana, submit the DataUpdate via molpha_execute (or molpha_fetch_verified autoSubmit) and read it back with molpha_get_latest — there is no separate simulate-verify path. Accepts the dataUpdate/signature objects from molpha_fetch_verified verbatim; short hex fields are zero-padded to their canonical widths server-side.",
       inputSchema: {
         dataUpdate: z.record(z.unknown()),
         signature: z.record(z.unknown()),
@@ -33,21 +34,8 @@ export function registerVerifyTool(server: ToolServer): void {
         includeAbi?: boolean;
       }
     ) => {
-      const { config, solana } = getMolphaContext();
-      const result = fromArtifact(dataUpdate, signature);
-
-      if (chain === "solana") {
-        const solanaVerify = await requireMethod<[Record<string, unknown>], Promise<unknown>>(
-          solana,
-          "verifyDataUpdate"
-        )(result);
-
-        return {
-          chain,
-          solana: solanaVerify,
-          verifiers: getVerifierMetadata(config, includeAbi)
-        };
-      }
+      const { config } = await getMolphaContext();
+      const result = toSignedResult({ dataUpdate, signature });
 
       return {
         chain,
@@ -57,22 +45,4 @@ export function registerVerifyTool(server: ToolServer): void {
       };
     })
   );
-}
-
-function fromArtifact(
-  dataUpdate: Record<string, unknown>,
-  signature: Record<string, unknown>
-): Record<string, unknown> {
-  return {
-    jobId: dataUpdate.jobId,
-    value: dataUpdate.value,
-    valuePacked: dataUpdate.valuePacked ?? dataUpdate.value,
-    timestamp: dataUpdate.canonicalTimestamp ?? dataUpdate.timestamp,
-    registryVersion: dataUpdate.registryVersion,
-    signaturesRequired: dataUpdate.signaturesRequired,
-    signersBitmap: signature.signersBitmap,
-    s: signature.signature ?? signature.s,
-    commitmentAddr: signature.commitment ?? signature.commitmentAddr,
-    fresh: true
-  };
 }

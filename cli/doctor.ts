@@ -4,6 +4,7 @@ import {
   buildCodexTomlSnippet,
   buildMcpJsonSnippet,
   checkBuildArtifact,
+  checkGatewayEndpoints,
   checkSignerAvailability,
   checkSolanaRpc,
   validateSignerEnv,
@@ -11,11 +12,13 @@ import {
 } from "../src/setup-validation.js";
 import { loadConfig } from "../src/config.js";
 
+const config = loadConfig();
 const checks: SetupCheck[] = [
   checkBuildArtifact(),
   ...validateSignerEnv(),
   await checkSignerAvailability(),
-  await checkSolanaRpc(loadConfig().solanaRpc)
+  await checkSolanaRpc(config.solanaRpc),
+  await checkGatewayEndpoints(config.gatewayEndpoints)
 ];
 
 const failed = checks.filter((check) => !check.ok);

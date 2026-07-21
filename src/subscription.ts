@@ -5,8 +5,10 @@ export interface SubscriptionStatus {
   owner?: string;
   planType?: unknown;
   prepaidUsdc?: string;
+  price?: string;
   validUntil?: string;
-  jobCount?: number;
+  usedRounds?: number;
+  maxRounds?: number;
   message?: string;
 }
 
@@ -22,22 +24,33 @@ export async function readSubscriptionStatus(
       return {
         active: false,
         message:
-          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR before creating jobs."
+          "No active subscription found. Run `npm run provision -- subscribe` (or molpha-provision bootstrap) with OWNER_KEYPAIR, or use payment: \"x402\" for a self-funded pay-per-request round."
       };
     }
 
     const validUntil = BigInt(String(subscription.validUntil ?? 0));
     const now = BigInt(Math.floor(Date.now() / 1000));
-    const active = validUntil > now;
+    const usedRounds = BigInt(String(subscription.usedRounds ?? 0));
+    const maxRounds = BigInt(String(subscription.maxRounds ?? 0));
+    const active = validUntil > now && (maxRounds === 0n || usedRounds < maxRounds);
 
     return {
       active,
       owner: subscription.owner?.toString?.() ?? String(subscription.owner ?? ""),
       planType: subscription.planType,
       prepaidUsdc: String(subscription.prepaidUsdc ?? ""),
+      price: String(subscription.price ?? ""),
       validUntil: validUntil.toString(),
-      jobCount: Number(subscription.jobCount ?? 0),
-      ...(active ? {} : { message: "Subscription expired. Extend via the bootstrap CLI before creating jobs." })
+      usedRounds: Number(usedRounds),
+      maxRounds: Number(maxRounds),
+      ...(active
+        ? {}
+        : {
+            message:
+              validUntil <= now
+                ? "Subscription expired. Extend via the bootstrap CLI before requesting data."
+                : "Subscription round quota exhausted for this period. Extend via the bootstrap CLI, or use payment: \"x402\"."
+          })
     };
   } catch (error) {
     return {

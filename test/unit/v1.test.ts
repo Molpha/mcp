@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { toDataUpdateArtifact } from "../../src/artifacts.js";
-import { loadConfig } from "../../src/config.js";
+import { toDataUpdateArtifact, toSignedResult } from "../../src/artifacts.js";
+import { loadConfig, type MolphaConfig } from "../../src/config.js";
 import { checkApiConfigDeterminism } from "../../src/determinism.js";
 import { normalizeError } from "../../src/errors.js";
-import { enforceExecuteCap, enforceJobCreateCap, resetGuardrailCounters } from "../../src/guardrails.js";
+import { decodeFeedValueKind, presentFeed } from "../../src/feed.js";
+import { toCanonicalHex } from "../../src/hex.js";
+import { checkX402PerRoundCap, checkX402SpendCap, enforceExecuteCap, resetGuardrailCounters } from "../../src/guardrails.js";
 import { buildVerifierArgsForChains } from "../../src/verifiers.js";
 
 describe("loadConfig", () => {
@@ -14,7 +16,6 @@ describe("loadConfig", () => {
       OWNER_KEYPAIR: "./owner.json",
       MOLPHA_EVM_NETWORKS: "evm-sepolia,arbitrum-sepolia",
       MOLPHA_STARKNET_NETWORKS: "starknet-sepolia",
-      MOLPHA_MAX_JOBS_PER_DAY: "5",
       MOLPHA_MAX_EXECUTES_PER_DAY: "20",
       MOLPHA_DRY_RUN: "true"
     });
@@ -25,7 +26,6 @@ describe("loadConfig", () => {
     expect(config.evmNetworks).toEqual(["evm-sepolia", "arbitrum-sepolia"]);
     expect(config.starknetNetworks).toEqual(["starknet-sepolia"]);
     expect(config.guardrails).toEqual({
-      maxJobsPerDay: 5,
       maxExecutesPerDay: 20,
       dryRunDefault: true
     });
@@ -35,38 +35,122 @@ describe("loadConfig", () => {
     const config = loadConfig({ AGENT_KEYPAIR: "./legacy.json" });
     expect(config.ownerKeypair).toBe("./legacy.json");
   });
+
+  it("parses x402 caps as decimal USDC and defaults GATEWAY_ENDPOINTS when blank", () => {
+    const config = loadConfig({
+      GATEWAY_ENDPOINTS: "",
+      MOLPHA_X402_MAX_PRICE_USDC: "2.5",
+      MOLPHA_X402_MAX_SPEND_PER_DAY_USDC: "20"
+    });
+
+    expect(config.gatewayEndpoints.length).toBeGreaterThan(0);
+    expect(config.x402.maxPriceUsdcAtomic).toBe(2_500_000n);
+    expect(config.x402.maxSpendPerDayUsdcAtomic).toBe(20_000_000n);
+  });
+});
+
+describe("toCanonicalHex", () => {
+  it("left-pads the gateway's minimal hex to the fixed width", () => {
+    expect(toCanonicalHex("4", 32, "signersBitmap")).toBe(`0x${"0".repeat(63)}4`);
+    expect(toCanonicalHex("0x04", 32, "signersBitmap")).toBe(`0x${"0".repeat(63)}4`);
+    expect(toCanonicalHex("0XAB", 20, "commitmentAddr")).toBe(`0x${"0".repeat(38)}ab`);
+  });
+
+  it("passes an already-canonical value through unchanged", () => {
+    const full = `0x${"a".repeat(64)}`;
+    expect(toCanonicalHex(full, 32, "s")).toBe(full);
+  });
+
+  it("rejects over-width and non-hex input", () => {
+    expect(() => toCanonicalHex("0x" + "a".repeat(66), 32, "s")).toThrow(/at most 32 bytes/);
+    expect(() => toCanonicalHex("0xnothex", 32, "s")).toThrow(/expected hex/);
+    expect(() => toCanonicalHex("", 32, "s")).toThrow(/empty/);
+  });
 });
 
 describe("toDataUpdateArtifact", () => {
   it("shapes gateway result into spec-friendly signed artifact", () => {
     const artifact = toDataUpdateArtifact({
-      jobId: "0xabc",
+      feedId: "0xabc",
       value: "123",
       fresh: true,
       registryVersion: 42,
       signaturesRequired: 3,
       timestamp: 1714300000,
-      s: "0xsig",
-      commitmentAddr: "0xcommit",
-      signersBitmap: "0xbitmap"
+      s: "0x5165",
+      commitmentAddr: "0xc0b",
+      signersBitmap: "4"
     });
 
     expect(artifact).toEqual({
       value: "123",
       fresh: true,
       dataUpdate: {
-        jobId: "0xabc",
+        feedId: `0x${"0".repeat(61)}abc`,
         registryVersion: 42,
         signaturesRequired: 3,
         value: "123",
         canonicalTimestamp: 1714300000
       },
       signature: {
-        signature: "0xsig",
-        commitment: "0xcommit",
-        signersBitmap: "0xbitmap"
+        signature: `0x${"0".repeat(60)}5165`,
+        commitment: `0x${"0".repeat(37)}c0b`,
+        signersBitmap: `0x${"0".repeat(63)}4`
       }
     });
+  });
+});
+
+describe("toSignedResult", () => {
+  const flat = {
+    feedId: `0x${"1".repeat(64)}`,
+    value: "66285",
+    valuePacked: `0x${"2".repeat(64)}`,
+    timestamp: 1714300000,
+    registryVersion: 7,
+    signaturesRequired: 1,
+    signersBitmap: "4",
+    s: `0x${"3".repeat(64)}`,
+    commitmentAddr: `0x${"4".repeat(40)}`,
+    fresh: true
+  };
+
+  it("accepts the fetch_verified artifact and the flat shape interchangeably", () => {
+    const artifact = toDataUpdateArtifact(flat);
+
+    expect(toSignedResult(artifact as unknown as Record<string, unknown>)).toEqual(
+      toSignedResult(flat)
+    );
+  });
+
+  it("canonicalizes the bitmap on both paths", () => {
+    expect(toSignedResult(flat).signersBitmap).toBe(`0x${"0".repeat(63)}4`);
+  });
+
+  it("ignores extra keys carried along from a pasted fetch_verified response", () => {
+    const pasted = {
+      ...(toDataUpdateArtifact(flat) as unknown as Record<string, unknown>),
+      payment: "x402",
+      trustAnchor: "…",
+      verifierArgs: { evm: {} }
+    };
+
+    expect(toSignedResult(pasted).s).toBe(flat.s);
+  });
+});
+
+describe("decodeFeedValueKind", () => {
+  it("flattens the Anchor enum variant object", () => {
+    expect(decodeFeedValueKind({ valueKind: { value: {} } })).toBe("value");
+    expect(decodeFeedValueKind({ valueKind: { hash: {} } })).toBe("hash");
+    expect(decodeFeedValueKind({ value_kind: { hash: {} } })).toBe("hash");
+    expect(decodeFeedValueKind(null)).toBeNull();
+  });
+
+  it("annotates the feed without dropping other fields", () => {
+    const feed = presentFeed({ valueKind: { value: {} }, registryVersion: 7 });
+    expect(feed).toMatchObject({ valueKind: "value", registryVersion: 7 });
+    expect(String(feed?.valueKindMeaning)).toContain("raw oracle payload");
   });
 });
 
@@ -93,31 +177,70 @@ describe("checkApiConfigDeterminism", () => {
 });
 
 describe("guardrails", () => {
-  it("enforces daily job and execute caps", () => {
+  it("enforces the daily execute cap", () => {
     resetGuardrailCounters();
-    const guardrails = { maxJobsPerDay: 1, maxExecutesPerDay: 1, dryRunDefault: false };
+    const guardrails = { maxExecutesPerDay: 1, dryRunDefault: false };
 
-    enforceJobCreateCap(guardrails);
-    expect(() => enforceJobCreateCap(guardrails)).toThrow(/cap reached/);
-
-    resetGuardrailCounters();
     enforceExecuteCap(guardrails);
     expect(() => enforceExecuteCap(guardrails)).toThrow(/cap reached/);
+  });
+
+  it("enforces the x402 per-round price cap", () => {
+    resetGuardrailCounters();
+    expect(() => checkX402SpendCap(2_000_000n, 1_000_000n, 10_000_000n)).toThrow(/cap reached/);
+  });
+
+  it("enforces the x402 daily spend cap across calls without recording spend on check alone", () => {
+    resetGuardrailCounters();
+    // checkX402SpendCap never records spend itself — repeated checks at the same
+    // price never accumulate.
+    checkX402SpendCap(1_000_000n, 1_000_000n, 1_000_000n);
+    expect(() => checkX402SpendCap(1_000_000n, 1_000_000n, 1_000_000n)).not.toThrow();
+  });
+
+  it("enforces the x402 per-round cap independently of daily spend", () => {
+    resetGuardrailCounters();
+    expect(() => checkX402PerRoundCap(2_000_000n, 1_000_000n)).toThrow(/cap reached/);
+    expect(() => checkX402PerRoundCap(1_000_000n, 1_000_000n)).not.toThrow();
   });
 });
 
 describe("normalizeError", () => {
-  it("maps subscription and config errors with remediation", () => {
+  it("maps subscription, payment, and config errors with remediation", () => {
     expect(normalizeError(new Error("OWNER_KEYPAIR is required")).code).toBe("missing_config");
-    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("bootstrap");
-    expect(normalizeError(new Error("job creation cap reached (10 per day)")).code).toBe("guardrail_exceeded");
+    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("x402");
+    expect(normalizeError(new Error("execute cap reached (10 per day)")).code).toBe("guardrail_exceeded");
+    expect(
+      normalizeError(new Error("x402 per-round price cap reached: round price (2 USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (1 USDC).")).code
+    ).toBe("guardrail_exceeded");
+  });
+
+  it("maps a 402 status to payment_required with remediation", () => {
+    const error = Object.assign(new Error("payment required: escrow ATA underfunded"), { status: 402 });
+    const normalized = normalizeError(error);
+    expect(normalized.code).toBe("payment_required");
+    expect(normalized.remediation).toContain("x402");
   });
 });
 
 describe("buildVerifierArgsForChains", () => {
+  const baseConfig: MolphaConfig = {
+    gatewayEndpoints: ["http://gateway.test"],
+    solanaRpc: "http://solana.test",
+    ownerKeypair: undefined,
+    evmNetworks: ["evm-sepolia"],
+    starknetNetworks: [],
+    guardrails: { maxExecutesPerDay: 100, dryRunDefault: false },
+    x402: {
+      maxPriceUsdcAtomic: 1_000_000n,
+      maxSpendPerDayUsdcAtomic: 10_000_000n,
+      gatewayPda: undefined
+    }
+  };
+
   it("includes evm verifier metadata when requested", () => {
     const result = {
-      jobId: "0".repeat(64),
+      feedId: "0".repeat(64),
       value: "1",
       valuePacked: "0".repeat(64),
       timestamp: 1,
@@ -129,17 +252,32 @@ describe("buildVerifierArgsForChains", () => {
       fresh: true
     };
 
-    const args = buildVerifierArgsForChains(result, ["evm"], {
-      gatewayEndpoints: ["http://gateway.test"],
-      solanaRpc: "http://solana.test",
-      ownerKeypair: undefined,
-      programId: undefined,
-      evmNetworks: ["evm-sepolia"],
-      starknetNetworks: [],
-      guardrails: { maxJobsPerDay: 10, maxExecutesPerDay: 100, dryRunDefault: false }
-    });
+    const args = buildVerifierArgsForChains(result, ["evm"], baseConfig);
 
     expect(args.evm).toBeDefined();
     expect((args.evm as { chainIds: number[] }).chainIds).toContain(11155111);
+  });
+
+  // The gateway emits a one-signer bitmap as "4"; the SDK's verifier-arg
+  // builders require exactly 32 bytes. Normalizing at the boundary is what
+  // keeps callers from having to zero-pad it themselves.
+  it("builds args from a gateway result whose signersBitmap is unpadded", () => {
+    const raw = {
+      feedId: "0".repeat(64),
+      value: "66285",
+      valuePacked: "0".repeat(64),
+      timestamp: 1,
+      registryVersion: 1,
+      signaturesRequired: 1,
+      signersBitmap: "4",
+      s: "0".repeat(64),
+      commitmentAddr: "0".repeat(40),
+      fresh: true
+    };
+
+    const args = buildVerifierArgsForChains(toSignedResult(raw), ["evm"], baseConfig);
+
+    expect(args.errors).toBeUndefined();
+    expect(args.evm).toBeDefined();
   });
 });

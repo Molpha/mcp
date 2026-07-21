@@ -18,7 +18,7 @@ const EVM_NETWORK_CHAIN_IDS: Record<string, number[]> = {
 
 export function getVerifierMetadata(config: MolphaConfig, includeAbi = false): VerifierMetadata {
   return {
-    evm: config.evmNetworks.map((network) => resolveVerifierAddress("getMolphaVerifierAddress", network)),
+    evm: config.evmNetworks.map((network) => resolveEvmVerifierAddress(network)),
     starknet: config.starknetNetworks.map((network) =>
       resolveVerifierAddress("getMolphaStarknetVerifierAddress", network)
     ),
@@ -54,7 +54,7 @@ export function buildVerifierArgsForChains(
     out.evm = {
       verifier: config.evmNetworks.map((network) => ({
         network,
-        address: resolveVerifierAddress("getMolphaVerifierAddress", network).address
+        address: resolveEvmVerifierAddress(network).address
       })),
       chainIds: config.evmNetworks.flatMap((network) => EVM_NETWORK_CHAIN_IDS[network] ?? []),
       args: built.evm
@@ -76,6 +76,20 @@ export function buildVerifierArgsForChains(
   }
 
   return out;
+}
+
+/**
+ * The EVM verifier is deployed via CREATE2 — the same address on every
+ * supported chain — so this is a single SDK constant rather than a
+ * per-network lookup.
+ */
+function resolveEvmVerifierAddress(network: string): { network: string; address?: string; error?: string } {
+  const address = getSdkExport<string>("MOLPHA_VERIFIER_ADDRESS");
+  if (!address) {
+    return { network, error: "MOLPHA_VERIFIER_ADDRESS is not exported by @molpha-oracle/sdk" };
+  }
+
+  return { network, address };
 }
 
 function resolveVerifierAddress(exportName: string, network: string): { network: string; address?: string; error?: string } {
