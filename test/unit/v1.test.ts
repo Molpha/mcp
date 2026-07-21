@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { toDataUpdateArtifact } from "../../src/artifacts.js";
-import { loadConfig } from "../../src/config.js";
+import { loadConfig, type MolphaConfig } from "../../src/config.js";
 import { checkApiConfigDeterminism } from "../../src/determinism.js";
 import { normalizeError } from "../../src/errors.js";
-import { enforceExecuteCap, enforceJobCreateCap, resetGuardrailCounters } from "../../src/guardrails.js";
+import { checkX402PerRoundCap, checkX402SpendCap, enforceExecuteCap, resetGuardrailCounters } from "../../src/guardrails.js";
 import { buildVerifierArgsForChains } from "../../src/verifiers.js";
 
 describe("loadConfig", () => {
@@ -14,7 +14,6 @@ describe("loadConfig", () => {
       OWNER_KEYPAIR: "./owner.json",
       MOLPHA_EVM_NETWORKS: "evm-sepolia,arbitrum-sepolia",
       MOLPHA_STARKNET_NETWORKS: "starknet-sepolia",
-      MOLPHA_MAX_JOBS_PER_DAY: "5",
       MOLPHA_MAX_EXECUTES_PER_DAY: "20",
       MOLPHA_DRY_RUN: "true"
     });
@@ -25,7 +24,6 @@ describe("loadConfig", () => {
     expect(config.evmNetworks).toEqual(["evm-sepolia", "arbitrum-sepolia"]);
     expect(config.starknetNetworks).toEqual(["starknet-sepolia"]);
     expect(config.guardrails).toEqual({
-      maxJobsPerDay: 5,
       maxExecutesPerDay: 20,
       dryRunDefault: true
     });
@@ -35,12 +33,24 @@ describe("loadConfig", () => {
     const config = loadConfig({ AGENT_KEYPAIR: "./legacy.json" });
     expect(config.ownerKeypair).toBe("./legacy.json");
   });
+
+  it("parses x402 caps as decimal USDC and defaults GATEWAY_ENDPOINTS when blank", () => {
+    const config = loadConfig({
+      GATEWAY_ENDPOINTS: "",
+      MOLPHA_X402_MAX_PRICE_USDC: "2.5",
+      MOLPHA_X402_MAX_SPEND_PER_DAY_USDC: "20"
+    });
+
+    expect(config.gatewayEndpoints.length).toBeGreaterThan(0);
+    expect(config.x402.maxPriceUsdcAtomic).toBe(2_500_000n);
+    expect(config.x402.maxSpendPerDayUsdcAtomic).toBe(20_000_000n);
+  });
 });
 
 describe("toDataUpdateArtifact", () => {
   it("shapes gateway result into spec-friendly signed artifact", () => {
     const artifact = toDataUpdateArtifact({
-      jobId: "0xabc",
+      feedId: "0xabc",
       value: "123",
       fresh: true,
       registryVersion: 42,
@@ -55,7 +65,7 @@ describe("toDataUpdateArtifact", () => {
       value: "123",
       fresh: true,
       dataUpdate: {
-        jobId: "0xabc",
+        feedId: "0xabc",
         registryVersion: 42,
         signaturesRequired: 3,
         value: "123",
@@ -93,31 +103,70 @@ describe("checkApiConfigDeterminism", () => {
 });
 
 describe("guardrails", () => {
-  it("enforces daily job and execute caps", () => {
+  it("enforces the daily execute cap", () => {
     resetGuardrailCounters();
-    const guardrails = { maxJobsPerDay: 1, maxExecutesPerDay: 1, dryRunDefault: false };
+    const guardrails = { maxExecutesPerDay: 1, dryRunDefault: false };
 
-    enforceJobCreateCap(guardrails);
-    expect(() => enforceJobCreateCap(guardrails)).toThrow(/cap reached/);
-
-    resetGuardrailCounters();
     enforceExecuteCap(guardrails);
     expect(() => enforceExecuteCap(guardrails)).toThrow(/cap reached/);
+  });
+
+  it("enforces the x402 per-round price cap", () => {
+    resetGuardrailCounters();
+    expect(() => checkX402SpendCap(2_000_000n, 1_000_000n, 10_000_000n)).toThrow(/cap reached/);
+  });
+
+  it("enforces the x402 daily spend cap across calls without recording spend on check alone", () => {
+    resetGuardrailCounters();
+    // checkX402SpendCap never records spend itself — repeated checks at the same
+    // price never accumulate.
+    checkX402SpendCap(1_000_000n, 1_000_000n, 1_000_000n);
+    expect(() => checkX402SpendCap(1_000_000n, 1_000_000n, 1_000_000n)).not.toThrow();
+  });
+
+  it("enforces the x402 per-round cap independently of daily spend", () => {
+    resetGuardrailCounters();
+    expect(() => checkX402PerRoundCap(2_000_000n, 1_000_000n)).toThrow(/cap reached/);
+    expect(() => checkX402PerRoundCap(1_000_000n, 1_000_000n)).not.toThrow();
   });
 });
 
 describe("normalizeError", () => {
-  it("maps subscription and config errors with remediation", () => {
+  it("maps subscription, payment, and config errors with remediation", () => {
     expect(normalizeError(new Error("OWNER_KEYPAIR is required")).code).toBe("missing_config");
-    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("bootstrap");
-    expect(normalizeError(new Error("job creation cap reached (10 per day)")).code).toBe("guardrail_exceeded");
+    expect(normalizeError(new Error("Subscription expired")).remediation).toContain("x402");
+    expect(normalizeError(new Error("execute cap reached (10 per day)")).code).toBe("guardrail_exceeded");
+    expect(
+      normalizeError(new Error("x402 per-round price cap reached: round price (2 USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (1 USDC).")).code
+    ).toBe("guardrail_exceeded");
+  });
+
+  it("maps a 402 status to payment_required with remediation", () => {
+    const error = Object.assign(new Error("payment required: escrow ATA underfunded"), { status: 402 });
+    const normalized = normalizeError(error);
+    expect(normalized.code).toBe("payment_required");
+    expect(normalized.remediation).toContain("x402");
   });
 });
 
 describe("buildVerifierArgsForChains", () => {
+  const baseConfig: MolphaConfig = {
+    gatewayEndpoints: ["http://gateway.test"],
+    solanaRpc: "http://solana.test",
+    ownerKeypair: undefined,
+    evmNetworks: ["evm-sepolia"],
+    starknetNetworks: [],
+    guardrails: { maxExecutesPerDay: 100, dryRunDefault: false },
+    x402: {
+      maxPriceUsdcAtomic: 1_000_000n,
+      maxSpendPerDayUsdcAtomic: 10_000_000n,
+      gatewayPda: undefined
+    }
+  };
+
   it("includes evm verifier metadata when requested", () => {
     const result = {
-      jobId: "0".repeat(64),
+      feedId: "0".repeat(64),
       value: "1",
       valuePacked: "0".repeat(64),
       timestamp: 1,
@@ -129,15 +178,7 @@ describe("buildVerifierArgsForChains", () => {
       fresh: true
     };
 
-    const args = buildVerifierArgsForChains(result, ["evm"], {
-      gatewayEndpoints: ["http://gateway.test"],
-      solanaRpc: "http://solana.test",
-      ownerKeypair: undefined,
-      programId: undefined,
-      evmNetworks: ["evm-sepolia"],
-      starknetNetworks: [],
-      guardrails: { maxJobsPerDay: 10, maxExecutesPerDay: 100, dryRunDefault: false }
-    });
+    const args = buildVerifierArgsForChains(result, ["evm"], baseConfig);
 
     expect(args.evm).toBeDefined();
     expect((args.evm as { chainIds: number[] }).chainIds).toContain(11155111);

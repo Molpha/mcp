@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "../src/env.js";
 import { parseArgs } from "node:util";
 import { createSolanaClient, requireMethod } from "../src/clients.js";
 import { loadConfig } from "../src/config.js";
@@ -21,7 +22,7 @@ if (command !== "subscribe" && command !== "extend") {
 }
 
 const config = loadConfig();
-const signer = createSigner(config);
+const signer = await createSigner(config);
 const solana = createSolanaClient(config, signer);
 
 const planName = values.plan ?? "Basic";
@@ -34,12 +35,12 @@ if (!values["dry-run"] && !maxPriceUsdc) {
 
 const summary = {
   command,
-  owner: signer.publicKey.toBase58(),
+  owner: signer.publicKey,
   plan: planName,
   maxPriceUsdc,
   gatewayEndpoints: config.gatewayEndpoints,
   solanaRpc: config.solanaRpc,
-  note: "Bootstrap only — job creation, fetch, and execute run in the MCP runtime with the same OWNER_KEYPAIR."
+  note: "Bootstrap only — fetch and execute run in the MCP runtime with the same OWNER_KEYPAIR. A subscription is optional: molpha_fetch_verified falls back to the self-funded x402 path when unsubscribed."
 };
 
 if (values["dry-run"]) {

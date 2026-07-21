@@ -11,13 +11,13 @@ export function registerGetCapabilitiesTool(server: ToolServer): void {
     {
       title: "Get Molpha capabilities",
       description:
-        "Returns the current Molpha verification surface: active registryVersion, registered node set, gateway endpoints, supported chains, and signing scheme. Call first to learn where a signed result can be verified.",
+        "Returns the current Molpha verification surface: active registryVersion, registered node set, gateway endpoints, supported chains, signing scheme, and x402 spend caps. Call first to learn where a signed result can be verified.",
       inputSchema: {
         includeAbi: z.boolean().optional().describe("Include the EVM verifier ABI in the response.")
       }
     },
     toolHandler(async ({ includeAbi = false }: { includeAbi?: boolean }) => {
-      const { config, gateway, solana } = getMolphaContext();
+      const { config, gateway, solana } = await getMolphaContext();
       const [nodesResult, registryVersionResult] = await Promise.all([
         settle("gateway.getNodes", async () => requireMethod<[], Promise<unknown>>(gateway, "getNodes")()),
         settle("solana.getRegistryVersion", async () =>
@@ -33,7 +33,7 @@ export function registerGetCapabilitiesTool(server: ToolServer): void {
         registryVersion,
         signingScheme: "PoP-Schnorr (secp256k1, two-nonce binding)",
         chains: {
-          solana: "devnet (canonical state, simulate-verify)",
+          solana: "devnet (canonical state)",
           evm: config.evmNetworks,
           starknet: config.starknetNetworks
         },
@@ -41,7 +41,14 @@ export function registerGetCapabilitiesTool(server: ToolServer): void {
         nodeCount: Array.isArray(nodes) ? nodes.length : 0,
         nodes: nodesResult,
         solanaRpc: config.solanaRpc,
-        verifiers
+        verifiers,
+        payment: {
+          modes: ["subscription", "x402", "auto"],
+          x402Caps: {
+            maxPriceUsdcAtomic: config.x402.maxPriceUsdcAtomic.toString(),
+            maxSpendPerDayUsdcAtomic: config.x402.maxSpendPerDayUsdcAtomic.toString()
+          }
+        }
       };
     })
   );

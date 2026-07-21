@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { getMolphaContext, requireMethod } from "../clients.js";
+import { getMolphaContext } from "../clients.js";
 import { toolHandler } from "../mcp.js";
 import { buildVerifierArgsForChains, getVerifierMetadata, type ChainTarget } from "../verifiers.js";
 import { type ToolServer } from "./types.js";
 
-const chainSchema = z.enum(["evm", "starknet", "solana"]);
+const chainSchema = z.enum(["evm", "starknet"]);
 
 export function registerVerifyTool(server: ToolServer): void {
   server.registerTool(
@@ -12,7 +12,7 @@ export function registerVerifyTool(server: ToolServer): void {
     {
       title: "Verify Molpha result",
       description:
-        "Verify a signed DataUpdate. Solana: runs the simulate verify path and returns the recovered value + validity. EVM/Starknet: returns the verifier address and call args for the agent to execute the stateless verify() itself. The server does not vouch for results it did not verify on-chain.",
+        "Build the verifier address and call args for a signed DataUpdate on EVM or Starknet, for the agent to execute the stateless verify() itself. The server does not vouch for results it did not verify on-chain. For Solana, submit the DataUpdate via molpha_execute (submit_data_update) and read it back with molpha_get_latest — there is no separate simulate-verify path.",
       inputSchema: {
         dataUpdate: z.record(z.unknown()),
         signature: z.record(z.unknown()),
@@ -33,21 +33,8 @@ export function registerVerifyTool(server: ToolServer): void {
         includeAbi?: boolean;
       }
     ) => {
-      const { config, solana } = getMolphaContext();
+      const { config } = await getMolphaContext();
       const result = fromArtifact(dataUpdate, signature);
-
-      if (chain === "solana") {
-        const solanaVerify = await requireMethod<[Record<string, unknown>], Promise<unknown>>(
-          solana,
-          "verifyDataUpdate"
-        )(result);
-
-        return {
-          chain,
-          solana: solanaVerify,
-          verifiers: getVerifierMetadata(config, includeAbi)
-        };
-      }
 
       return {
         chain,
@@ -64,7 +51,7 @@ function fromArtifact(
   signature: Record<string, unknown>
 ): Record<string, unknown> {
   return {
-    jobId: dataUpdate.jobId,
+    feedId: dataUpdate.feedId,
     value: dataUpdate.value,
     valuePacked: dataUpdate.valuePacked ?? dataUpdate.value,
     timestamp: dataUpdate.canonicalTimestamp ?? dataUpdate.timestamp,
