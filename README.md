@@ -1,6 +1,6 @@
 # Molpha MCP
 
-[![CI](https://github.com/Molpha/mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Molpha/mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/molpha/mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/molpha/mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](package.json)
 
@@ -49,7 +49,7 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 ### 1. Install and build
 
 ```bash
-git clone https://github.com/Molpha/mcp.git
+git clone https://github.com/molpha/mcp.git
 cd mcp
 npm ci
 cp .env.example .env
@@ -257,7 +257,7 @@ Before opening a pull request, run:
 npm run typecheck && npm test && npm run build
 ```
 
-Bug reports and focused pull requests are welcome. For security issues, use [GitHub's private vulnerability reporting](https://github.com/Molpha/mcp/security/advisories/new) instead of a public issue.
+Bug reports and focused pull requests are welcome. For security issues, use [GitHub's private vulnerability reporting](https://github.com/molpha/mcp/security/advisories/new) instead of a public issue.
 
 ## Releasing
 

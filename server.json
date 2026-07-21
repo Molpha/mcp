@@ -4,7 +4,7 @@
   "title": "Molpha MCP",
   "description": "MCP server that lets AI agents create, fetch, verify, and publish Molpha oracle data.",
   "repository": {
-    "url": "https://github.com/Molpha/mcp",
+    "url": "https://github.com/molpha/mcp",
     "source": "github"
   },
   "websiteUrl": "https://docs.molpha.io/",
