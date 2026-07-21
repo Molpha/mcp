@@ -1,27 +1,19 @@
-import { getAddressEncoder } from "@solana/kit";
+import type { Address } from "@solana/kit";
 import { z } from "zod";
-import { sortApiConfigHeaders } from "../apiconfig.js";
+import { deriveFeedId, type ApiConfigLike } from "../apiconfig.js";
 import { toDataUpdateArtifact } from "../artifacts.js";
 import { getMolphaContext, requireMethod } from "../clients.js";
 import { type MolphaConfig } from "../config.js";
 import { normalizeFeedId } from "../hex.js";
 import { toolHandler } from "../mcp.js";
-import { requireSdkExport } from "../sdk.js";
 import { readSubscriptionStatus } from "../subscription.js";
 import { buildVerifierArgsForChains, type ChainTarget } from "../verifiers.js";
 import { agentFetch } from "../x402.js";
+import { apiConfigSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
 
 const chainSchema = z.enum(["evm", "starknet", "solana"]);
 const paymentSchema = z.enum(["auto", "subscription", "x402"]);
-
-const apiConfigSchema = z.object({
-  url: z.string().min(1),
-  method: z.enum(["GET", "POST"]).optional(),
-  headers: z.record(z.string()).optional(),
-  responseParser: z.string().min(1),
-  valueTransform: z.string().optional()
-});
 
 export function registerFetchVerifiedTool(server: ToolServer): void {
   server.registerTool(
@@ -64,12 +56,7 @@ export function registerFetchVerifiedTool(server: ToolServer): void {
     ) => {
       const { config, gateway, solana, signer, connection } = await getMolphaContext();
       const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
-      const resolvedFeedId = resolveFeedId(
-        feedId,
-        apiConfig,
-        signaturesRequired,
-        Buffer.from(getAddressEncoder().encode(signer.publicKey))
-      );
+      const resolvedFeedId = resolveFeedId(feedId, apiConfig, signaturesRequired, signer.publicKey);
 
       const resolvedPayment =
         payment === "auto" ? (await readSubscriptionStatus(solana)).active ? "subscription" : "x402" : payment;
@@ -145,33 +132,15 @@ function buildResult(
 
 function resolveFeedId(
   feedId: string | undefined,
-  apiConfig: z.infer<typeof apiConfigSchema>,
+  apiConfig: ApiConfigLike,
   signaturesRequired: number,
-  owner: Uint8Array
+  owner: Address
 ): string {
-  const derived = deriveFeedId(apiConfig, signaturesRequired, owner);
+  const derived = deriveFeedId(apiConfig, signaturesRequired, owner).feedId;
   if (feedId !== undefined && normalizeFeedId(feedId) !== normalizeFeedId(derived)) {
     throw new Error(
       `feedId does not match apiConfig + signaturesRequired for this signer: expected ${derived}, got ${feedId}`
     );
   }
   return derived;
-}
-
-function deriveFeedId(
-  apiConfig: z.infer<typeof apiConfigSchema>,
-  signaturesRequired: number,
-  owner: Uint8Array
-): string {
-  const canonicalizeAPIConfig = requireSdkExport<(cfg: Record<string, unknown>) => Record<string, unknown>>(
-    "canonicalizeAPIConfig"
-  );
-  const deriveApiConfigHash = requireSdkExport<(cfg: Record<string, unknown>) => Uint8Array>("deriveApiConfigHash");
-  const deriveFeedIdString = requireSdkExport<(owner: Uint8Array, hash: Uint8Array, sigs: number) => string>(
-    "deriveFeedIdString"
-  );
-
-  const canonical = canonicalizeAPIConfig(sortApiConfigHeaders(apiConfig));
-  const apiConfigHash = deriveApiConfigHash(canonical);
-  return deriveFeedIdString(owner, apiConfigHash, signaturesRequired);
 }

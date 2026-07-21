@@ -1,4 +1,4 @@
-import { type GuardrailConfig } from "./config.js";
+import { formatUsdcAtomic, type GuardrailConfig } from "./config.js";
 
 interface DailyCounter {
   day: string;
@@ -47,7 +47,7 @@ export function enforceExecuteCap(config: GuardrailConfig): void {
 export function checkX402PerRoundCap(priceAtomic: bigint, maxPriceUsdcAtomic: bigint): void {
   if (priceAtomic > maxPriceUsdcAtomic) {
     throw new Error(
-      `x402 per-round price cap reached: round price (${formatUsdc(priceAtomic)} USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (${formatUsdc(maxPriceUsdcAtomic)} USDC).`
+      `x402 per-round price cap reached: round price (${formatUsdcAtomic(priceAtomic)} USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (${formatUsdcAtomic(maxPriceUsdcAtomic)} USDC).`
     );
   }
 }
@@ -58,7 +58,7 @@ export function checkX402DailySpendCap(amountAtomic: bigint, maxSpendPerDayUsdcA
   const spentToday = x402Spend.day === day ? x402Spend.spentAtomic : 0n;
   if (spentToday + amountAtomic > maxSpendPerDayUsdcAtomic) {
     throw new Error(
-      `x402 daily spend cap reached (${formatUsdc(maxSpendPerDayUsdcAtomic)} USDC per day, ${formatUsdc(spentToday)} USDC already spent). Adjust MOLPHA_X402_MAX_SPEND_PER_DAY_USDC or wait until tomorrow.`
+      `x402 daily spend cap reached (${formatUsdcAtomic(maxSpendPerDayUsdcAtomic)} USDC per day, ${formatUsdcAtomic(spentToday)} USDC already spent). Adjust MOLPHA_X402_MAX_SPEND_PER_DAY_USDC or wait until tomorrow.`
     );
   }
 }
@@ -86,12 +86,6 @@ export function recordX402Spend(priceAtomic: bigint): void {
   }
 
   x402Spend.spentAtomic += priceAtomic;
-}
-
-function formatUsdc(atomic: bigint): string {
-  const whole = atomic / 1_000_000n;
-  const fraction = atomic % 1_000_000n;
-  return fraction === 0n ? whole.toString() : `${whole}.${fraction.toString().padStart(6, "0").replace(/0+$/, "")}`;
 }
 
 export interface WritePreview {

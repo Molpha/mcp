@@ -1,3 +1,6 @@
+import { getAddressEncoder, type Address } from "@solana/kit";
+import { requireSdkExport } from "./sdk.js";
+
 /**
  * apiConfig canonicalization shared by feed derivation and the x402 client.
  *
@@ -25,4 +28,45 @@ export function sortApiConfigHeaders<T extends { headers?: Record<string, string
   }
 
   return { ...apiConfig, headers: sorted };
+}
+
+export interface ApiConfigLike {
+  url: string;
+  method?: "GET" | "POST" | undefined;
+  headers?: Record<string, string> | undefined;
+  responseParser: string;
+  valueTransform?: string | undefined;
+}
+
+/** Sorts headers, then hands the config to the SDK's canonicalizer (see above for why). */
+export function canonicalizeApiConfig(apiConfig: ApiConfigLike): Record<string, unknown> {
+  const canonicalize = requireSdkExport<(cfg: Record<string, unknown>) => Record<string, unknown>>(
+    "canonicalizeAPIConfig"
+  );
+  return canonicalize(sortApiConfigHeaders(apiConfig) as unknown as Record<string, unknown>);
+}
+
+export function deriveApiConfigHash(canonicalApiConfig: Record<string, unknown>): Uint8Array {
+  return requireSdkExport<(cfg: Record<string, unknown>) => Uint8Array>("deriveApiConfigHash")(canonicalApiConfig);
+}
+
+export function deriveFeedIdString(owner: Address, apiConfigHash: Uint8Array, signaturesRequired: number): string {
+  const derive = requireSdkExport<(owner: Uint8Array, hash: Uint8Array, sigs: number) => string>(
+    "deriveFeedIdString"
+  );
+  return derive(Buffer.from(getAddressEncoder().encode(owner)), apiConfigHash, signaturesRequired);
+}
+
+export interface DerivedFeedId {
+  feedId: string;
+  apiConfigHash: Uint8Array;
+  canonicalApiConfig: Record<string, unknown>;
+}
+
+/** Full feedId derivation: canonicalize -> hash -> feedId, for a given owner + quorum. */
+export function deriveFeedId(apiConfig: ApiConfigLike, signaturesRequired: number, owner: Address): DerivedFeedId {
+  const canonicalApiConfig = canonicalizeApiConfig(apiConfig);
+  const apiConfigHash = deriveApiConfigHash(canonicalApiConfig);
+  const feedId = deriveFeedIdString(owner, apiConfigHash, signaturesRequired);
+  return { feedId, apiConfigHash, canonicalApiConfig };
 }

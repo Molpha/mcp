@@ -370,6 +370,116 @@ describe("agentFetch", () => {
     expect(fakeConnection.sendRawTransaction).toHaveBeenCalledTimes(1);
   });
 
+  // The gateway checks funding before the amount lock, so an `amount: 0`
+  // discovery probe against an already-funded escrow returns 400 with the
+  // round price rather than a 402 quote. That used to abort the whole round.
+  it("treats the funded-escrow 400 from discovery as a quote when status is unavailable", async () => {
+    const gatewayPda = Keypair.generate().publicKey.toBase58();
+    const config = makeConfig({ gatewayPda }); // pinned, so status is not needed
+
+    let executeCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("/status")) {
+        return jsonResponse(503, { error: "status unavailable" });
+      }
+
+      executeCalls += 1;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      if (body.amount === 0) {
+        return jsonResponse(400, { error: "amount: must equal the computed round price 50015" });
+      }
+
+      expect(body.amount).toBe(50015);
+      expect(typeof body.agent_request_auth_sig).toBe("string");
+      return jsonResponse(200, {
+        status: "completed",
+        data: {
+          feedId: "cd".repeat(32),
+          value: "77",
+          valuePacked: "0".repeat(64),
+          timestamp: body.canonical_timestamp,
+          registryVersion: 1,
+          signaturesRequired: 1,
+          signersBitmap: "0".repeat(64),
+          s: "0".repeat(64),
+          commitmentAddr: "0".repeat(40),
+          fresh: true
+        }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      { apiConfig: defaultApiConfig, signaturesRequired: 1 }
+    );
+
+    expect(result.value).toBe("77");
+    expect(executeCalls).toBe(2); // discovery probe + the signed round
+    expect(fakeConnection.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("dry-runs a funded escrow with no shortfall when status is unavailable", async () => {
+    const gatewayPda = Keypair.generate().publicKey.toBase58();
+    const { escrow, escrowAta } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);
+    const config = makeConfig({ gatewayPda });
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) return jsonResponse(503, { error: "status unavailable" });
+      return jsonResponse(400, { error: "amount: must equal the computed round price 50015" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await agentFetch(
+      { config, connection: fakeConnection as never, signer, solana },
+      { apiConfig: defaultApiConfig, signaturesRequired: 1, dryRun: true }
+    );
+
+    expect(result.priceAtomicUsdc).toBe("50015");
+    expect(result.shortfallAtomicUsdc).toBe("0");
+    expect(result.escrow).toBe(escrow);
+    expect(result.ata).toBe(escrowAta);
+  });
+
+  it("fails with an actionable message when the escrow is funded but the gateway PDA is unknown", async () => {
+    const config = makeConfig(); // no pin, no cache, status broken
+
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) return jsonResponse(503, { error: "status unavailable" });
+      return jsonResponse(400, { error: "amount: must equal the computed round price 50015" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        { apiConfig: defaultApiConfig, signaturesRequired: 1 }
+      )
+    ).rejects.toThrow(/MOLPHA_X402_GATEWAY_PDA/);
+  });
+
+  it("does not retry non-amount 400s such as a stale registry version", async () => {
+    const gatewayPda = Keypair.generate().publicKey.toBase58();
+    const config = makeConfig({ gatewayPda });
+
+    let executeCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/status")) return jsonResponse(503, { error: "status unavailable" });
+      executeCalls += 1;
+      return jsonResponse(400, { error: "registry_version: stale, current registry version is 3" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      agentFetch(
+        { config, connection: fakeConnection as never, signer, solana },
+        { apiConfig: defaultApiConfig, signaturesRequired: 1 }
+      )
+    ).rejects.toThrow(/registry_version: stale/);
+    expect(executeCalls).toBe(1);
+  });
+
   it("uses status gateway + price when already funded (no unsigned discovery)", async () => {
     const gatewayPda = Keypair.generate().publicKey.toBase58();
     const { escrow } = await derivedFundingAddresses(String(signer.publicKey), gatewayPda);

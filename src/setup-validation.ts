@@ -1,8 +1,14 @@
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { createSolanaRpc } from "@solana/kit";
-import { loadConfig, loadKeypair, resolveEnvString } from "./config.js";
+import {
+  formatUsdcAtomic,
+  isInlineKeypair,
+  loadConfig,
+  loadKeypair,
+  resolveEnvString,
+  resolvePath
+} from "./config.js";
 import { createSigner } from "./signer/factory.js";
 import { validateSolanaPubkey } from "./solana-address.js";
 
@@ -287,8 +293,8 @@ export function buildMcpEnvBlock(env: NodeJS.ProcessEnv = process.env): Record<s
     MOLPHA_EVM_NETWORKS: config.evmNetworks.join(","),
     MOLPHA_STARKNET_NETWORKS: config.starknetNetworks.join(","),
     MOLPHA_MAX_EXECUTES_PER_DAY: String(config.guardrails.maxExecutesPerDay),
-    MOLPHA_X402_MAX_PRICE_USDC: formatUsdcDecimal(config.x402.maxPriceUsdcAtomic),
-    MOLPHA_X402_MAX_SPEND_PER_DAY_USDC: formatUsdcDecimal(config.x402.maxSpendPerDayUsdcAtomic)
+    MOLPHA_X402_MAX_PRICE_USDC: formatUsdcAtomic(config.x402.maxPriceUsdcAtomic),
+    MOLPHA_X402_MAX_SPEND_PER_DAY_USDC: formatUsdcAtomic(config.x402.maxSpendPerDayUsdcAtomic)
   };
 
   if (config.x402.gatewayPda) {
@@ -388,24 +394,6 @@ function appendOptionalPubkeyChecks(checks: SetupCheck[], env: NodeJS.ProcessEnv
   return checks;
 }
 
-function formatUsdcDecimal(atomic: bigint): string {
-  const whole = atomic / 1_000_000n;
-  const fraction = atomic % 1_000_000n;
-  return fraction === 0n ? whole.toString() : `${whole}.${fraction.toString().padStart(6, "0").replace(/0+$/, "")}`;
-}
-
-function isInlineKeypair(pathOrJson: string): boolean {
-  return pathOrJson.trim().startsWith("[");
-}
-
 function resolveKeypairPath(path: string): string {
-  if (isInlineKeypair(path)) {
-    return "<inline-json-keypair>";
-  }
-
-  if (path.startsWith("~/")) {
-    return resolve(homedir(), path.slice(2));
-  }
-
-  return isAbsolute(path) ? path : resolve(process.cwd(), path);
+  return isInlineKeypair(path) ? "<inline-json-keypair>" : resolvePath(path);
 }

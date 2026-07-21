@@ -1,20 +1,11 @@
-import { getAddressEncoder } from "@solana/kit";
 import { z } from "zod";
-import { sortApiConfigHeaders } from "../apiconfig.js";
+import { deriveFeedId } from "../apiconfig.js";
 import { getMolphaContext, requireMethod } from "../clients.js";
-import { normalizeError } from "../errors.js";
+import { settle } from "../errors.js";
 import { normalizeFeedId } from "../hex.js";
 import { toolHandler } from "../mcp.js";
-import { requireSdkExport } from "../sdk.js";
+import { apiConfigSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
-
-const apiConfigSchema = z.object({
-  url: z.string().min(1),
-  method: z.enum(["GET", "POST"]).optional(),
-  headers: z.record(z.string()).optional(),
-  responseParser: z.string().min(1),
-  valueTransform: z.string().optional()
-});
 
 export function registerDescribeFeedTool(server: ToolServer): void {
   server.registerTool(
@@ -48,19 +39,7 @@ export function registerDescribeFeedTool(server: ToolServer): void {
           throw new Error("either feedId, or apiConfig + signaturesRequired, is required");
         }
 
-        const canonicalizeAPIConfig = requireSdkExport<(cfg: Record<string, unknown>) => Record<string, unknown>>(
-          "canonicalizeAPIConfig"
-        );
-        const deriveApiConfigHash = requireSdkExport<(cfg: Record<string, unknown>) => Uint8Array>(
-          "deriveApiConfigHash"
-        );
-        const deriveFeedIdString = requireSdkExport<
-          (owner: Uint8Array, hash: Uint8Array, sigs: number) => string
-        >("deriveFeedIdString");
-
-        const canonical = canonicalizeAPIConfig(sortApiConfigHeaders(apiConfig));
-        const apiConfigHash = deriveApiConfigHash(canonical);
-        resolvedFeedId = deriveFeedIdString(Buffer.from(getAddressEncoder().encode(signer.publicKey)), apiConfigHash, signaturesRequired);
+        resolvedFeedId = deriveFeedId(apiConfig, signaturesRequired, signer.publicKey).feedId;
       }
 
       const [onChainFeed, subscription] = await Promise.all([
@@ -86,15 +65,4 @@ export function registerDescribeFeedTool(server: ToolServer): void {
       };
     })
   );
-}
-
-async function settle<T>(
-  label: string,
-  run: () => Promise<T>
-): Promise<{ ok: true; value: T } | { ok: false; label: string; error: ReturnType<typeof normalizeError> }> {
-  try {
-    return { ok: true, value: await run() };
-  } catch (error) {
-    return { ok: false, label, error: normalizeError(error) };
-  }
 }

@@ -14,7 +14,7 @@ import {
   TOKEN_PROGRAM_ADDRESS
 } from "@solana-program/token";
 import { Transaction, type Connection } from "@solana/web3.js";
-import { sortApiConfigHeaders } from "./apiconfig.js";
+import { canonicalizeApiConfig, deriveApiConfigHash, deriveFeedIdString } from "./apiconfig.js";
 import { getMolphaProgramId, requireMethod } from "./clients.js";
 import { type MolphaConfig } from "./config.js";
 import {
@@ -257,7 +257,16 @@ export async function agentFetch(
 
   const registryVersion = await requireMethod<[], Promise<number>>(solana, "getRegistryVersion")();
 
-  const status = await fetchAgentStatus(config, payer, opts.signaturesRequired).catch(() => undefined);
+  // Status is advisory, so a failure must not abort the round — but it is the
+  // only source of the settling gateway PDA when nothing is pinned or cached,
+  // so keep the reason around for the error message that needs it.
+  let statusError: string | undefined;
+  const status = await fetchAgentStatus(config, payer, opts.signaturesRequired).catch(
+    (error: unknown) => {
+      statusError = error instanceof Error ? error.message : String(error);
+      return undefined;
+    }
+  );
   let gatewayPda =
     config.x402.gatewayPda ?? gatewayPdaCache.get(endpointKey) ?? status?.gateway ?? undefined;
   if (gatewayPda) cacheGatewayPda(endpointKey, gatewayPda);
@@ -288,12 +297,27 @@ export async function agentFetch(
         registryVersion,
         timestamp: Math.floor(Date.now() / 1000)
       });
-      const verified = await verifyX402FundingAccept(discovery, fundingVerifyCtx(gatewayPda));
-      assertFeedIdMatch(expectedFeedId, discovery.extra.feedId);
+      if (discovery.kind === "already_funded") {
+        // The escrow covers the round; the 400 quote carries no addresses, so
+        // report whatever the pinned/cached gateway PDA can still derive.
+        const escrow = gatewayPda
+          ? String(await deriveAgentEscrow(payer, address(gatewayPda), programId))
+          : "unknown";
+        const ata =
+          escrow !== "unknown"
+            ? String(await deriveAgentEscrowAta(address(escrow), usdcMint))
+            : "unknown";
+        checkX402PerRoundCap(discovery.roundPrice, config.x402.maxPriceUsdcAtomic);
+        return dryRunPreview(expectedFeedId, escrow, ata, discovery.roundPrice, discovery.roundPrice);
+      }
+
+      const verified = await verifyX402FundingAccept(discovery.accept, fundingVerifyCtx(gatewayPda));
+      assertFeedIdMatch(expectedFeedId, discovery.accept.extra.feedId);
       cacheGatewayPda(endpointKey, String(verified.gateway));
       availableAtomic = bigIntMax(
         0n,
-        BigInt(discovery.extra.currentAtaBalance) - BigInt(discovery.extra.committedAmount)
+        BigInt(discovery.accept.extra.currentAtaBalance) -
+          BigInt(discovery.accept.extra.committedAmount)
       );
       return dryRunPreview(
         expectedFeedId,
@@ -336,9 +360,7 @@ export async function agentFetch(
           () => undefined
         );
         if (!refreshed?.gateway) {
-          throw new Error(
-            "x402 escrow appears funded but the settling gateway PDA is unknown; set MOLPHA_X402_GATEWAY_PDA or ensure GET /v1/agent/{payer}/status returns gateway."
-          );
+          throw new Error(gatewayPdaUnknownMessage(statusError));
         }
         gatewayPda = refreshed.gateway;
         cacheGatewayPda(endpointKey, gatewayPda);
@@ -358,27 +380,40 @@ export async function agentFetch(
           timestamp
         });
 
-        const verified = await verifyX402FundingAccept(discovery, fundingVerifyCtx(gatewayPda));
-        assertFeedIdMatch(expectedFeedId, discovery.extra.feedId);
-        gatewayPda = String(verified.gateway);
-        cacheGatewayPda(endpointKey, gatewayPda);
-        priceAtomic = verified.roundPrice;
+        if (discovery.kind === "already_funded") {
+          // Status was unavailable so we assumed an empty escrow, but the
+          // gateway says it is funded. Nothing to fund — take the quote and
+          // sign, provided the gateway PDA is known from a pin or the cache.
+          if (!gatewayPda) {
+            throw new Error(gatewayPdaUnknownMessage(statusError));
+          }
+          priceAtomic = discovery.roundPrice;
+          availableAtomic = discovery.roundPrice;
+          escrowStr = String(await deriveAgentEscrow(payer, address(gatewayPda), programId));
+          feedIdHex = expectedFeedId;
+        } else {
+          const verified = await verifyX402FundingAccept(discovery.accept, fundingVerifyCtx(gatewayPda));
+          assertFeedIdMatch(expectedFeedId, discovery.accept.extra.feedId);
+          gatewayPda = String(verified.gateway);
+          cacheGatewayPda(endpointKey, gatewayPda);
+          priceAtomic = verified.roundPrice;
 
-        if (verified.fundAmount > 0n) {
-          await fundEscrow(connection, signer, {
-            mint: verified.usdcMint,
-            escrow: verified.escrow,
-            escrowAta: verified.escrowAta,
-            amountAtomic: verified.fundAmount
-          });
-          recordX402Spend(verified.fundAmount);
-          walletSpendRecordedForRound = true;
+          if (verified.fundAmount > 0n) {
+            await fundEscrow(connection, signer, {
+              mint: verified.usdcMint,
+              escrow: verified.escrow,
+              escrowAta: verified.escrowAta,
+              amountAtomic: verified.fundAmount
+            });
+            recordX402Spend(verified.fundAmount);
+            walletSpendRecordedForRound = true;
+          }
+
+          timestamp = discovery.accept.extra.canonicalTimestamp;
+          feedIdHex = expectedFeedId;
+          escrowStr = String(verified.escrow);
+          availableAtomic = priceAtomic;
         }
-
-        timestamp = discovery.extra.canonicalTimestamp;
-        feedIdHex = expectedFeedId;
-        escrowStr = String(verified.escrow);
-        availableAtomic = priceAtomic;
       }
     }
 
@@ -437,8 +472,16 @@ export async function agentFetch(
     }
 
     if (outcome.kind === "amount_mismatch") {
-      // Price moved or we raced funding — refresh status for a fresh quote.
-      // Do not unsigned-discover while the escrow may already be funded.
+      // Price moved between the quote and the signed request. The rejection
+      // carries the current price, so re-sign against it directly; only fall
+      // back to status when the gateway did not name one.
+      if (outcome.quotedPrice !== undefined) {
+        priceAtomic = outcome.quotedPrice;
+        availableAtomic = outcome.quotedPrice;
+        timestamp = Math.floor(Date.now() / 1000);
+        continue;
+      }
+
       const refreshed = await fetchAgentStatus(config, payer, opts.signaturesRequired).catch(
         () => undefined
       );
@@ -461,6 +504,12 @@ export async function agentFetch(
       priceAtomic = undefined;
       availableAtomic = 0n;
       continue;
+    }
+
+    if (outcome.kind === "bad_request") {
+      // Stale registry version, clock skew, malformed apiConfig — none of
+      // these are fixed by retrying the same request.
+      throw new Error(`x402 agent execute rejected: ${outcome.message}`);
     }
 
     if (outcome.kind === "conflict") {
@@ -511,22 +560,11 @@ function dryRunPreview(
   };
 }
 
-function canonicalizeApiConfig(apiConfig: ApiConfigInput): Record<string, unknown> {
-  const canonicalize = requireSdkExport<(cfg: Record<string, unknown>) => Record<string, unknown>>(
-    "canonicalizeAPIConfig"
-  );
-  return canonicalize(sortApiConfigHeaders(apiConfig) as unknown as Record<string, unknown>);
-}
-
-function deriveApiConfigHash(apiConfig: Record<string, unknown>): Uint8Array {
-  return requireSdkExport<(cfg: Record<string, unknown>) => Uint8Array>("deriveApiConfigHash")(apiConfig);
-}
-
-function deriveFeedIdString(owner: Address, apiConfigHash: Uint8Array, signaturesRequired: number): string {
-  const derive = requireSdkExport<(owner: Uint8Array, hash: Uint8Array, sigs: number) => string>(
-    "deriveFeedIdString"
-  );
-  return derive(Buffer.from(getAddressEncoder().encode(owner)), apiConfigHash, signaturesRequired);
+function gatewayPdaUnknownMessage(statusError: string | undefined): string {
+  return [
+    "x402 escrow appears funded but the settling gateway PDA is unknown; set MOLPHA_X402_GATEWAY_PDA or ensure GET /v1/agent/{payer}/status returns gateway.",
+    statusError ? ` (status lookup failed: ${statusError})` : ""
+  ].join("");
 }
 
 function assertFeedIdMatch(expected: string, provided: string | undefined): void {
@@ -636,7 +674,17 @@ interface DiscoverArgs {
   timestamp: number;
 }
 
-async function discover(config: MolphaConfig, args: DiscoverArgs): Promise<X402Accept> {
+/**
+ * The gateway checks funding before the amount lock, so an unsigned `amount: 0`
+ * probe only yields a 402 quote while the escrow is underfunded. Once it is
+ * funded the same probe falls through to the amount lock and comes back as a
+ * 400 that still carries the round price — which is a quote, not a failure.
+ */
+type DiscoveryOutcome =
+  | { kind: "quote"; accept: X402Accept }
+  | { kind: "already_funded"; roundPrice: bigint };
+
+async function discover(config: MolphaConfig, args: DiscoverArgs): Promise<DiscoveryOutcome> {
   const outcome = await postAgentExecute(config.gatewayEndpoints, {
     payer: args.payer,
     canonical_timestamp: args.timestamp,
@@ -646,9 +694,13 @@ async function discover(config: MolphaConfig, args: DiscoverArgs): Promise<X402A
     apiConfig: args.apiConfig
   });
 
+  if (outcome.kind === "amount_mismatch" && outcome.quotedPrice !== undefined) {
+    return { kind: "already_funded", roundPrice: outcome.quotedPrice };
+  }
+
   if (outcome.kind !== "payment_required") {
     throw new Error(
-      `expected 402 payment-required from the unsigned discovery request, got ${outcome.kind}: ${
+      `unsigned discovery request failed (expected a 402 quote), got ${outcome.kind}: ${
         "message" in outcome ? outcome.message : ""
       }`
     );
@@ -659,17 +711,34 @@ async function discover(config: MolphaConfig, args: DiscoverArgs): Promise<X402A
     throw new Error("gateway 402 response is missing accepts[0]");
   }
 
-  return accept;
+  return { kind: "quote", accept };
 }
 
 type PostOutcome =
   | { kind: "ok"; body: Record<string, unknown> }
   | { kind: "payment_required"; body: X402PaymentRequiredBody }
-  | { kind: "amount_mismatch"; message: string }
+  | { kind: "amount_mismatch"; message: string; quotedPrice?: bigint }
+  | { kind: "bad_request"; message: string }
   | { kind: "unauthorized"; message: string }
   | { kind: "conflict"; message: string }
   | { kind: "unavailable"; message: string }
   | { kind: "error"; message: string };
+
+/**
+ * The gateway returns 400 for several unrelated validation failures
+ * (`amount`, `registry_version`, `canonical_timestamp`, …). Only the amount
+ * lock is retryable by re-quoting; treating every 400 as an amount mismatch
+ * hid stale-registry and clock-skew errors behind five pointless retries.
+ */
+function classifyBadRequest(message: string): PostOutcome {
+  if (!/^amount:/.test(message)) {
+    return { kind: "bad_request", message };
+  }
+  const quoted = /round price (\d+)/.exec(message);
+  return quoted
+    ? { kind: "amount_mismatch", message, quotedPrice: BigInt(quoted[1]!) }
+    : { kind: "amount_mismatch", message };
+}
 
 async function postAgentExecute(endpoints: string[], body: Record<string, unknown>): Promise<PostOutcome> {
   let lastError: PostOutcome = { kind: "error", message: "no reachable gateway endpoint" };
@@ -694,7 +763,7 @@ async function postAgentExecute(endpoints: string[], body: Record<string, unknow
       return { kind: "payment_required", body: (await res.json()) as X402PaymentRequiredBody };
     }
     if (res.status === 400) {
-      return { kind: "amount_mismatch", message: await readErrorMessage(res) };
+      return classifyBadRequest(await readErrorMessage(res));
     }
     if (res.status === 401) {
       return { kind: "unauthorized", message: await readErrorMessage(res) };

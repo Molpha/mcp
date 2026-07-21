@@ -70,9 +70,7 @@ export function loadAgentKeypair(config: MolphaConfig): Uint8Array {
 }
 
 export function loadKeypair(pathOrJson: string): Uint8Array {
-  const raw = pathOrJson.trim().startsWith("[")
-    ? pathOrJson
-    : readFileSync(resolvePath(pathOrJson), "utf8");
+  const raw = isInlineKeypair(pathOrJson) ? pathOrJson : readFileSync(resolvePath(pathOrJson), "utf8");
   const secretKey = JSON.parse(raw) as number[];
 
   if (!Array.isArray(secretKey) || secretKey.length !== 64) {
@@ -133,10 +131,22 @@ export function resolveEnvString(value: string | undefined): string | undefined 
   return value;
 }
 
-function resolvePath(path: string): string {
+export function resolvePath(path: string): string {
   if (path.startsWith("~/")) {
     return resolve(homedir(), path.slice(2));
   }
 
   return isAbsolute(path) ? path : resolve(process.cwd(), path);
+}
+
+/** An OWNER_KEYPAIR value can be a file path or an inline JSON secret-key array. */
+export function isInlineKeypair(pathOrJson: string): boolean {
+  return pathOrJson.trim().startsWith("[");
+}
+
+/** Formats a USDC atomic (6-decimal) amount as a decimal string, e.g. 1_500_000n -> "1.5". */
+export function formatUsdcAtomic(atomic: bigint): string {
+  const whole = atomic / 1_000_000n;
+  const fraction = atomic % 1_000_000n;
+  return fraction === 0n ? whole.toString() : `${whole}.${fraction.toString().padStart(6, "0").replace(/0+$/, "")}`;
 }

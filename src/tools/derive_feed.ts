@@ -1,19 +1,11 @@
-import { getAddressEncoder } from "@solana/kit";
 import { z } from "zod";
-import { sortApiConfigHeaders } from "../apiconfig.js";
+import { deriveFeedId } from "../apiconfig.js";
 import { getMolphaContext } from "../clients.js";
 import { checkApiConfigDeterminism } from "../determinism.js";
 import { toolHandler } from "../mcp.js";
 import { requireSdkExport } from "../sdk.js";
+import { apiConfigSchema } from "./schemas.js";
 import { type ToolServer } from "./types.js";
-
-const apiConfigSchema = z.object({
-  url: z.string().min(1),
-  method: z.enum(["GET", "POST"]).optional(),
-  headers: z.record(z.string()).optional(),
-  responseParser: z.string().min(1),
-  valueTransform: z.string().optional()
-});
 
 export function registerDeriveFeedTool(server: ToolServer): void {
   server.registerTool(
@@ -50,23 +42,17 @@ export function registerDeriveFeedTool(server: ToolServer): void {
         throw new Error(`Non-deterministic source rejected: ${determinism.warnings.join("; ")}`);
       }
 
-      const canonicalizeAPIConfig = requireSdkExport<(cfg: Record<string, unknown>) => Record<string, unknown>>(
-        "canonicalizeAPIConfig"
-      );
-      const deriveApiConfigHash = requireSdkExport<(cfg: Record<string, unknown>) => Uint8Array>("deriveApiConfigHash");
-      const deriveFeedIdString = requireSdkExport<
-        (owner: Uint8Array, hash: Uint8Array, sigs: number) => string
-      >("deriveFeedIdString");
       const bytesToHex = requireSdkExport<(bytes: Uint8Array) => string>("bytesToHex");
-
-      const canonical = canonicalizeAPIConfig(sortApiConfigHeaders(apiConfig));
-      const apiConfigHash = deriveApiConfigHash(canonical);
-      const feedId = deriveFeedIdString(Buffer.from(getAddressEncoder().encode(signer.publicKey)), apiConfigHash, signaturesRequired);
+      const { feedId, apiConfigHash, canonicalApiConfig } = deriveFeedId(
+        apiConfig,
+        signaturesRequired,
+        signer.publicKey
+      );
 
       return {
         feedId,
         apiConfigHash: bytesToHex(apiConfigHash),
-        canonicalApiConfig: canonical,
+        canonicalApiConfig,
         signaturesRequired,
         owner: signer.publicKey,
         determinismWarnings: determinism.warnings.length > 0 ? determinism.warnings : undefined,

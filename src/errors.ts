@@ -6,6 +6,19 @@ export interface NormalizedToolError {
   remediation?: string;
 }
 
+export type SettleResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; label: string; error: NormalizedToolError };
+
+/** Runs `run()`, capturing a failure as a normalized error instead of throwing. */
+export async function settle<T>(label: string, run: () => Promise<T>): Promise<SettleResult<T>> {
+  try {
+    return { ok: true, value: await run() };
+  } catch (error) {
+    return { ok: false, label, error: normalizeError(error) };
+  }
+}
+
 export function normalizeError(error: unknown): NormalizedToolError {
   const status = getStatus(error);
   const message = error instanceof Error ? error.message : String(error);
