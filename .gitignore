@@ -9,3 +9,4 @@ privy-test.json
 *-secrets.json
 *.log
 .DS_Store
+tmp

@@ -1,7 +1,7 @@
 /** Shape a gateway DataUpdateResult into the spec-friendly signed artifact. */
 
 export interface SignedDataUpdate {
-  jobId: string;
+  feedId: string;
   registryVersion: number;
   signaturesRequired: number;
   value: string;
@@ -27,7 +27,7 @@ export function toDataUpdateArtifact(result: Record<string, unknown>): DataUpdat
     value: String(result.value ?? ""),
     fresh: Boolean(result.fresh ?? true),
     dataUpdate: {
-      jobId: String(result.jobId ?? ""),
+      feedId: String(result.feedId ?? ""),
       registryVersion: Number(result.registryVersion ?? 0),
       signaturesRequired: Number(result.signaturesRequired ?? 0),
       value: String(result.value ?? ""),

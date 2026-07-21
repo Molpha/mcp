@@ -5,8 +5,13 @@ interface DailyCounter {
   count: number;
 }
 
-const jobCreates: DailyCounter = { day: "", count: 0 };
+interface DailySpend {
+  day: string;
+  spentAtomic: bigint;
+}
+
 const executes: DailyCounter = { day: "", count: 0 };
+const x402Spend: DailySpend = { day: "", spentAtomic: 0n };
 
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
@@ -28,18 +33,56 @@ function bump(counter: DailyCounter, max: number, label: string): void {
 
 /** Reset counters — exposed for tests. */
 export function resetGuardrailCounters(): void {
-  jobCreates.day = "";
-  jobCreates.count = 0;
   executes.day = "";
   executes.count = 0;
-}
-
-export function enforceJobCreateCap(config: GuardrailConfig): void {
-  bump(jobCreates, config.maxJobsPerDay, "job creation");
+  x402Spend.day = "";
+  x402Spend.spentAtomic = 0n;
 }
 
 export function enforceExecuteCap(config: GuardrailConfig): void {
   bump(executes, config.maxExecutesPerDay, "execute");
+}
+
+/**
+ * Checks a proposed x402 round's price against the per-round and daily
+ * spend caps, without recording the spend (call {@link recordX402Spend}
+ * once the round actually settles/funds).
+ */
+export function checkX402SpendCap(
+  priceAtomic: bigint,
+  maxPriceUsdcAtomic: bigint,
+  maxSpendPerDayUsdcAtomic: bigint
+): void {
+  if (priceAtomic > maxPriceUsdcAtomic) {
+    throw new Error(
+      `x402 per-round price cap reached: round price (${formatUsdc(priceAtomic)} USDC) exceeds MOLPHA_X402_MAX_PRICE_USDC (${formatUsdc(maxPriceUsdcAtomic)} USDC).`
+    );
+  }
+
+  const day = todayKey();
+  const spentToday = x402Spend.day === day ? x402Spend.spentAtomic : 0n;
+  if (spentToday + priceAtomic > maxSpendPerDayUsdcAtomic) {
+    throw new Error(
+      `x402 daily spend cap reached (${formatUsdc(maxSpendPerDayUsdcAtomic)} USDC per day, ${formatUsdc(spentToday)} USDC already spent). Adjust MOLPHA_X402_MAX_SPEND_PER_DAY_USDC or wait until tomorrow.`
+    );
+  }
+}
+
+/** Records an actual x402 spend against the daily cap after funding succeeds. */
+export function recordX402Spend(priceAtomic: bigint): void {
+  const day = todayKey();
+  if (x402Spend.day !== day) {
+    x402Spend.day = day;
+    x402Spend.spentAtomic = 0n;
+  }
+
+  x402Spend.spentAtomic += priceAtomic;
+}
+
+function formatUsdc(atomic: bigint): string {
+  const whole = atomic / 1_000_000n;
+  const fraction = atomic % 1_000_000n;
+  return fraction === 0n ? whole.toString() : `${whole}.${fraction.toString().padStart(6, "0").replace(/0+$/, "")}`;
 }
 
 export interface WritePreview {

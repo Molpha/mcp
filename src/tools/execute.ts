@@ -5,7 +5,7 @@ import { toolHandler } from "../mcp.js";
 import { type ToolServer } from "./types.js";
 
 const signedResultSchema = z.object({
-  jobId: z.string().min(1),
+  feedId: z.string().min(1),
   value: z.string().optional(),
   valuePacked: z.string().optional(),
   timestamp: z.number().int(),
@@ -38,16 +38,16 @@ export function registerExecuteTool(server: ToolServer): void {
         dryRun?: boolean;
       }
     ) => {
-      const { config, solana, signer } = getMolphaContext();
+      const { config, solana, signer } = await getMolphaContext();
       const isDryRun = dryRun ?? config.guardrails.dryRunDefault;
 
       if (isDryRun) {
         return previewWrite("molpha_execute", {
           chain: "solana",
           action: "submit_data_update",
-          jobId: result.jobId,
+          feedId: result.feedId,
           registryVersion: result.registryVersion,
-          submitter: signer.publicKey.toBase58()
+          submitter: signer.publicKey
         });
       }
 
@@ -63,7 +63,7 @@ export function registerExecuteTool(server: ToolServer): void {
       return {
         chain: "solana",
         action: "submit_data_update",
-        jobId: result.jobId,
+        feedId: result.feedId,
         signature: tx.signature
       };
     })

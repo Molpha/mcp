@@ -38,20 +38,28 @@
     "test": "vitest run"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.18.0"
   },
   "dependencies": {
+    "@anchor-lang/core": "^1.1.2",
     "@coral-xyz/anchor": "^0.30.1",
     "@modelcontextprotocol/sdk": "^1.13.0",
-    "@molpha-oracle/sdk": "0.4.0",
-    "@privy-io/server-auth": "^1.32.5",
-    "@turnkey/sdk-server": "^6.1.1",
+    "@molpha-oracle/sdk": "0.5.0-dev-20260720133711",
+    "@privy-io/node": "^0.26.0",
+    "@solana-program/token": "^0.15.0",
+    "@solana/kit": "^7.0.0",
+    "@solana/spl-token": "0.4.15",
+    "@solana/web3.js": "^1.98.4",
+    "@turnkey/sdk-server": "7.0.0",
     "@turnkey/solana": "^1.1.31",
-    "@solana/spl-token": "^0.4.9",
-    "@solana/web3.js": "^1.98.0",
     "bn.js": "^5.2.2",
     "dotenv": "^16.6.1",
     "zod": "^3.25.0"
+  },
+  "overrides": {
+    "@privy-io/node": {
+      "@solana/kit": "$@solana/kit"
+    }
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.6",

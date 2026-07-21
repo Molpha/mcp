@@ -14,25 +14,26 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 ## What you can do
 
 - Discover the active registry, oracle nodes, gateways, and verifier deployments.
-- Register a job that commits to an HTTP endpoint and response parser.
-- Request a threshold-signed result and build verifier arguments for multiple chains.
-- Simulate verification or submit a verified update to a Solana feed.
+- Derive a feedId locally from a declarative API spec — no transaction, no subscription required. Feeds are created lazily on first settle.
+- Request a threshold-signed result and build verifier arguments for multiple chains, paid for either by an active USDC subscription or a self-funded [x402](#x402-pay-per-request) round.
+- Build EVM/Starknet verifier call args, or submit a verified update to a Solana feed.
 - Use a local keypair, Privy server wallet, or Turnkey wallet without changing the MCP tool surface.
-- Put daily caps and a global dry-run default around agent-initiated writes.
+- Put daily caps and a global dry-run default around agent-initiated writes and x402 spend.
 
 ## MCP tools
 
 | Tool | Access | Description |
 | --- | --- | --- |
-| `molpha_get_capabilities` | Read | Return the registry version, node set, gateways, chains, and verifier metadata. |
-| `molpha_describe_job` | Read | Read a job's on-chain state, gateway config, subscription status, and supported chains. |
-| `molpha_create_job` | Write | Register a declarative API job. Requires an active subscription. |
-| `molpha_fetch_verified` | Read/quota | Run or reuse a signing round and return the signed artifact plus verifier arguments. |
+| `molpha_get_capabilities` | Read | Return the registry version, node set, gateways, chains, verifier metadata, and x402 caps. |
+| `molpha_describe_feed` | Read | Read a feed's on-chain state and subscription status. Pass `feedId`, or `apiConfig` + `signaturesRequired` to derive it. |
+| `molpha_derive_feed` | Read | Locally derive a feedId from `apiConfig` + `signaturesRequired`. No transaction. |
+| `molpha_agent_status` | Read | Read the x402 agent escrow (USDC balance, committed amount, quoted next price) for the current signer. |
+| `molpha_fetch_verified` | Read/quota/spend | Run a signing round and return the signed artifact plus verifier arguments. `payment: "subscription" \| "x402" \| "auto"` selects how the round is paid for. |
 | `molpha_get_latest` | Read | Read the latest value stored in a Solana feed account. |
-| `molpha_verify` | Read | Simulate verification on Solana or build EVM/Starknet verifier arguments. |
+| `molpha_verify` | Read | Build EVM/Starknet verifier address and call arguments. |
 | `molpha_execute` | Write | Submit a signed data update to Solana. |
 
-`molpha_verify` does not execute EVM or Starknet calls; it returns the verifier address and call arguments. `molpha_execute` currently submits only to Solana.
+`molpha_verify` does not execute EVM or Starknet calls; it returns the verifier address and call arguments. `molpha_execute` currently submits only to Solana. There is no standalone Solana verify-simulation path in this SDK version — submit via `molpha_execute` and read the result back with `molpha_get_latest`.
 
 ## Quick start
 
@@ -40,7 +41,7 @@ Molpha turns HTTP API responses into threshold-signed payloads that can be verif
 
 - Node.js 20 or later
 - A Solana wallet funded with Devnet SOL
-- Devnet USDC if you need to create jobs or request new signing rounds
+- Devnet USDC if you plan to use an active subscription or the x402 pay-per-request path
 - An MCP client such as Cursor, Claude Desktop, or Codex
 
 ### 1. Install and build
@@ -61,10 +62,10 @@ For local development, point `OWNER_KEYPAIR` at a Solana JSON keypair. Use an ab
 SIGNER_BACKEND=memory
 OWNER_KEYPAIR=/absolute/path/to/owner-keypair.json
 SOLANA_RPC=https://api.devnet.solana.com
-GATEWAY_ENDPOINTS=https://gateway.molpha.io
+GATEWAY_ENDPOINTS=
 ```
 
-The same wallet owns jobs, authenticates gateway requests, and signs Solana transactions. Do not commit `.env`, wallet files, or credentials.
+The same wallet owns feeds and any x402 escrow, authenticates gateway requests, and signs Solana transactions. Do not commit `.env`, wallet files, or credentials.
 
 Other supported signer configurations:
 
@@ -106,7 +107,28 @@ npm run provision -- extend --max-price-usdc 20000000
 
 ### 5. Connect an MCP client
 
-Molpha MCP communicates over stdio. Point your client at the built server, not at `src/server.ts`:
+Pick one of the install paths below. In both cases the server speaks stdio JSON-RPC and needs the same signer settings from step 2.
+
+#### Claude Desktop (MCPB)
+
+Package the built tree into an [MCP Bundle](https://github.com/modelcontextprotocol/mcpb) and install it as a desktop extension. The repo already includes a [`manifest.json`](manifest.json) that declares the Node entry point, tools, and user-config fields.
+
+```bash
+npm run build
+npx @anthropic-ai/mcpb pack . molpha-mcp.mcpb
+```
+
+That writes `molpha-mcp.mcpb` in the repo root. Install it in Claude Desktop by any of:
+
+- Double-click the `.mcpb` file
+- Drag it into the Claude Desktop window
+- Settings → Extensions → Advanced settings → Install Extension… → select the `.mcpb` file
+
+During install, set the signer backend and related fields (local keypair path, Privy, or Turnkey). Those map to the same env vars as `.env.example`.
+
+#### Cursor, Codex, or manual Claude Desktop config
+
+Point the client at the built server (`dist/src/server.js`), not at `src/server.ts`:
 
 ```json
 {
@@ -117,16 +139,15 @@ Molpha MCP communicates over stdio. Point your client at the built server, not a
       "env": {
         "SIGNER_BACKEND": "memory",
         "OWNER_KEYPAIR": "/absolute/path/to/owner-keypair.json",
-        "SOLANA_RPC": "https://api.devnet.solana.com",
-        "GATEWAY_ENDPOINTS": "https://gateway.molpha.io"
+        "SOLANA_RPC": "https://api.devnet.solana.com"
       }
     }
   }
 }
 ```
 
-- Cursor: save the JSON under `mcpServers` in `.cursor/mcp.json` or `~/.cursor/mcp.json`.
-- Claude Desktop: add it to `claude_desktop_config.json` and restart the app.
+- Cursor: save the JSON under `mcpServers` in `.cursor/mcp.json` or `~/.cursor/mcp.json`. Ready-to-edit copies live in [examples](examples) (`cursor-memory.mcp.json`, `cursor-privy.mcp.json`, `cursor-turnkey.mcp.json`).
+- Claude Desktop: add the same block to `claude_desktop_config.json` and restart, or prefer the MCPB path above.
 - Codex: use one of the [Codex TOML examples](examples/codex-memory.toml), or run `codex mcp add molpha -- node /absolute/path/to/mcp/dist/src/server.js` and then add the signer variables to `config.toml`.
 
 Restart the client after changing configuration or rebuilding. A direct `node dist/src/server.js` invocation waits silently for JSON-RPC on stdin; that is expected for a stdio server.
@@ -139,36 +160,45 @@ Once the server is connected, these prompts exercise the main workflows.
 
 > Use Molpha to inspect the current oracle capabilities. Summarize the registry version, node count, supported chains, gateway endpoints, and verifier addresses. Do not make any writes.
 
-### Preview a job
+### Preview a feed
 
-> Dry-run a Molpha job for `https://api.example.com/v1/finalized/price` using the JSON path `$.price`, 8 decimals, and 3 required signatures. Show me the API config hash and any determinism warnings. Do not send a transaction.
+> Derive a Molpha feedId for `https://api.example.com/v1/finalized/price` using the JSON path `$.price` and 3 required signatures. Show me the API config hash, the derived feedId, and any determinism warnings. Do not send a transaction.
 
 Replace the example URL with a public endpoint that returns stable, independently reproducible data. Live ticker endpoints may produce different values across oracle nodes and fail to reach quorum.
 
 ### Fetch and verify a result
 
-> For Molpha job `<JOB_ID>`, use its committed API config to fetch a signed result with a maximum age of 60 seconds for Solana and EVM. Verify it through the Solana simulation path, and summarize the signed value, timestamp, registry version, quorum, and EVM verifier call. Treat the signed artifact as the trust anchor; do not trust the value by itself.
+> For that same feed, fetch a signed result with `payment: "auto"` and a maximum age of 60 seconds, for the EVM chain. Summarize the signed value, timestamp, registry version, quorum, and EVM verifier call, and tell me whether it was paid for via subscription or x402. Treat the signed artifact as the trust anchor; do not trust the value by itself.
+
+### Check x402 spend before paying
+
+> Call `molpha_agent_status` for 3 required signatures. Tell me the escrow's USDC balance, committed amount, and quoted next price before I authorize any x402 spend.
 
 ### Publish with an approval checkpoint
 
-> Read the latest value for Molpha job `<JOB_ID>`. If I provide a newer signed result, preview `molpha_execute` with `dryRun: true`, explain the fee-paying wallet and exact write, and wait for my confirmation before submitting it to Solana.
+> Read the latest value for Molpha feed `<FEED_ID>`. If I provide a newer signed result, preview `molpha_execute` with `dryRun: true`, explain the fee-paying wallet and exact write, and wait for my confirmation before submitting it to Solana.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     Client["MCP client<br/>Cursor · Claude · Codex"] <-->|"stdio / JSON-RPC"| Server["Molpha MCP server"]
-    Server --> Guardrails["Write guardrails<br/>dry-run · daily caps"]
+    Server --> Guardrails["Write guardrails<br/>dry-run · daily caps · x402 spend caps"]
     Server --> Signer["Signer adapter"]
     Signer --> Memory["Local keypair"]
     Signer --> Keychain["Privy or Turnkey"]
     Server --> SDK["Molpha SDK"]
-    SDK --> Gateway["Molpha gateway"]
+    Server --> X402["x402 client<br/>escrow funding · AgentRequestAuth"]
+    SDK --> Gateway["Molpha gateway<br/>subscription round"]
+    X402 --> Gateway2["Molpha gateway<br/>x402 agent round"]
     Gateway <--> Nodes["Oracle node quorum"]
-    SDK <--> Solana["Solana program<br/>jobs · subscriptions · feeds"]
+    Gateway2 <--> Nodes
+    SDK <--> Solana["Solana program<br/>feeds · subscriptions · agent escrows"]
+    X402 <--> Solana
     Gateway --> Artifact["Threshold-signed<br/>data update"]
+    Gateway2 --> Artifact
     Artifact --> Server
-    Server --> Args["Solana simulation or<br/>EVM / Starknet verifier args"]
+    Server --> Args["EVM / Starknet verifier args,<br/>or submit_data_update on Solana"]
 ```
 
 The server is an adapter and policy boundary, not a new source of truth:
@@ -189,15 +219,26 @@ Provisioning is a separate CLI path because subscribing or extending debits USDC
 | `KEYCHAIN_BACKEND` | — | `privy` or `turnkey` for a keychain signer |
 | `OWNER_KEYPAIR` | — | Local Solana JSON keypair path |
 | `SOLANA_RPC` | `https://api.devnet.solana.com` | Solana RPC endpoint |
-| `GATEWAY_ENDPOINTS` | SDK default | Comma-separated gateway URLs |
-| `PROGRAM_ID` | SDK default | Optional Molpha program override |
+| `GATEWAY_ENDPOINTS` | `https://brebeneskul.gateway.molpha.io` | Comma-separated **Molpha gateway** base URLs (not your Solana RPC). Must expose `/v1/nodes` and signing routes (`/v1/agent/execute` for x402, `/v1/round/execute` for subscription). Run `npm run doctor` to verify. |
 | `MOLPHA_EVM_NETWORKS` | `evm-sepolia` | Comma-separated EVM verifier networks |
 | `MOLPHA_STARKNET_NETWORKS` | `starknet-sepolia` | Comma-separated Starknet verifier networks |
-| `MOLPHA_MAX_JOBS_PER_DAY` | `10` | Process-local daily job-creation cap |
 | `MOLPHA_MAX_EXECUTES_PER_DAY` | `100` | Process-local daily Solana-submit cap |
 | `MOLPHA_DRY_RUN` | `false` | Preview all writes when set to `true` |
+| `MOLPHA_X402_MAX_PRICE_USDC` | `1` | Refuse to fund an x402 round priced above this (decimal USDC) |
+| `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC` | `10` | Process-local daily x402 spend cap (decimal USDC) |
+| `MOLPHA_X402_GATEWAY_PDA` | — | Optional: skip the x402 discovery round-trip when the gateway's PDA is known out of band |
 
 The daily counters are process-local and reset when the server restarts. They are safety rails, not durable rate limits.
+
+## x402 pay-per-request
+
+`molpha_fetch_verified` accepts a `payment` argument:
+
+- `"subscription"` — use the caller's active USDC subscription (see [Bootstrap a subscription](#4-bootstrap-a-subscription)). Fails if the subscription is inactive or out of quota.
+- `"x402"` — self-fund the round from a per-signer escrow account, with no subscription required. If the escrow is underfunded, the MCP server funds it from the signer's own USDC balance (creating the escrow's associated token account if needed) up to `MOLPHA_X402_MAX_PRICE_USDC` per round and `MOLPHA_X402_MAX_SPEND_PER_DAY_USDC` per day, then refuses with a clear error above those caps.
+- `"auto"` (default) — use the subscription when active, otherwise fall back to `"x402"`.
+
+Call `molpha_agent_status` to inspect the escrow (USDC balance, amount already committed to unsettled rounds, and the quoted price for a given quorum) before spending, or to confirm a round settled. `encryptSecrets` (private API secrets) is not yet supported on the x402 path — use `payment: "subscription"` for feeds with encrypted secrets.
 
 ## Development
 
@@ -220,6 +261,7 @@ Bug reports and focused pull requests are welcome. For security issues, use [Git
 
 - [Molpha protocol documentation](https://docs.molpha.io/)
 - [Client configuration examples](examples)
+- [MCPB manifest](manifest.json) for Claude Desktop / `.mcpb` packaging
 
 ## License
 
