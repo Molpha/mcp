@@ -1,6 +1,6 @@
 {
   "name": "@molpha/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "mcpName": "io.github.molpha/mcp",
   "description": "MCP server exposing Molpha oracle runtime tools over the Molpha SDK.",
   "license": "MIT",
@@ -37,6 +37,9 @@
     "dist/cli",
     "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --import tsx src/server.ts",
@@ -45,7 +48,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "sync-version": "node scripts/sync-version.mjs",
-    "version": "node scripts/sync-version.mjs && git add manifest.json server.json"
+    "changeset": "changeset",
+    "ci:version": "changeset version && npm run sync-version",
+    "ci:publish": "changeset publish"
   },
   "engines": {
     "node": ">=24.0.0"
@@ -72,6 +77,8 @@
     }
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.1",
     "@types/bn.js": "^5.1.6",
     "@types/node": "^22.15.29",
     "tsx": "^4.19.4",

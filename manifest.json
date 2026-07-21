@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "molpha-mcp",
   "display_name": "Molpha MCP",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server that lets AI agents create, fetch, verify, and publish Molpha oracle data.",
   "long_description": "Molpha turns HTTP API responses into threshold-signed payloads that can be verified on Solana, EVM, and Starknet.\n\nThis extension exposes that workflow as MCP tools and keeps signing behind a local keypair, Privy, or Turnkey-backed wallet.\n\n**Current release targets Solana Devnet and Sepolia verifier networks.** Treat it as testnet software. Write tools spend SOL and may consume subscription quota or x402 escrow funds unless dry-run mode is enabled.",
   "author": {
@@ -17,13 +17,23 @@
   "documentation": "https://docs.molpha.io/",
   "support": "https://github.com/Molpha/mcp/issues",
   "license": "MIT",
-  "keywords": ["mcp", "molpha", "oracle", "solana", "evm", "starknet", "x402"],
+  "keywords": [
+    "mcp",
+    "molpha",
+    "oracle",
+    "solana",
+    "evm",
+    "starknet",
+    "x402"
+  ],
   "server": {
     "type": "node",
     "entry_point": "dist/src/server.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/dist/src/server.js"],
+      "args": [
+        "${__dirname}/dist/src/server.js"
+      ],
       "env": {
         "SIGNER_BACKEND": "${user_config.signer_backend}",
         "KEYCHAIN_BACKEND": "${user_config.keychain_backend}",
@@ -83,7 +93,11 @@
     }
   ],
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "node": ">=20.0.0"
     }
